@@ -47,9 +47,7 @@ export class AdaptiveAI {
   }
 
   makeMove(): Move {
-    if (Math.random() < this.getRandomChance()) {
-      return getRandomMove();
-    }
+    if (Math.random() < this.getRandomChance()) return getRandomMove();
 
     let predicted: Move | null = null;
     const history = this.opponentHistory;
@@ -64,9 +62,7 @@ export class AdaptiveAI {
       }
     }
 
-    if (predicted) {
-      return getCounterMove(predicted);
-    }
+    if (predicted) return getCounterMove(predicted);
 
     let maxCount = 0;
     let mostCommon: Move = 'rock';
@@ -77,9 +73,7 @@ export class AdaptiveAI {
       }
     }
 
-    if (history.length > 5 && maxCount > 2) {
-      return getCounterMove(mostCommon);
-    }
+    if (history.length > 5 && maxCount > 2) return getCounterMove(mostCommon);
 
     return getRandomMove();
   }
@@ -87,7 +81,7 @@ export class AdaptiveAI {
   getSummary(): string {
     const total = this.stats.totalGames;
     if (total === 0) return 'No games played yet';
-    return `${this.name} (${this.difficulty}): ${this.stats.wins}W/${this.stats.losses}L/${this.stats.ties}T (${Math.round(this.stats.winRate * 100)}% WR)`;
+    return `${this.name} (${this.difficulty}): ${this.stats.wins}W/${this.stats.losses}L/${this.stats.ties}T`;
   }
 
   reset(): void {

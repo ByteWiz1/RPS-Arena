@@ -49,18 +49,7 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
 
   setMode: (mode) => {
     const ai = new AdaptiveAI('AI Opponent', get().aiDifficulty);
-    set({
-      mode,
-      ai,
-      player1Move: null,
-      player2Move: null,
-      player1Score: 0,
-      player2Score: 0,
-      round: 0,
-      history: [],
-      isPlaying: false,
-      winner: null,
-    });
+    set({ mode, ai, player1Move: null, player2Move: null, player1Score: 0, player2Score: 0, round: 0, history: [], isPlaying: false, winner: null });
   },
 
   setAIDifficulty: (difficulty) => {
@@ -119,27 +108,12 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     setTimeout(() => get().clearMoves(), 1500);
   },
 
-  clearMoves: () => set({
-    player1Move: null,
-    player2Move: null,
-    winner: null,
-    isPlaying: false,
-  }),
+  clearMoves: () => set({ player1Move: null, player2Move: null, winner: null, isPlaying: false }),
 
   resetGame: () => {
     const { aiDifficulty } = get();
     const ai = new AdaptiveAI('AI Opponent', aiDifficulty);
-    set({
-      player1Move: null,
-      player2Move: null,
-      player1Score: 0,
-      player2Score: 0,
-      round: 0,
-      history: [],
-      isPlaying: false,
-      winner: null,
-      ai,
-    });
+    set({ player1Move: null, player2Move: null, player1Score: 0, player2Score: 0, round: 0, history: [], isPlaying: false, winner: null, ai });
   },
 
   getResultText: () => {

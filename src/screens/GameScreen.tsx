@@ -1,22 +1,3 @@
-import React from 'react';
-import { View, Text, StyleSheet, SafeAreaView } from 'react-native';
-
-export default function GameScreen() {
-  return (
-      <SafeAreaView style={styles.container}>
-            <View style={styles.content}>
-                    <Text style={styles.text}>Game Screen</Text>
-                            <Text style={styles.subtext}>Coming soon</Text>
-                                  </View>
-                                      </SafeAreaView>
-                                        );
-                                        }
-
-                                        const styles = StyleSheet.create({
-                                          container: { flex: 1, backgroundColor: '#0a0a0f' },
-                                            content: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-                                              text: { fontSize: 24, color: '#ffffff', fontWeight: '700' },
-                                                subtext: { fontSize: 16, color: '#5a5a7a', marginTop: 8 },
 import React, { useEffect, useState } from 'react';
 import {
   View,
@@ -319,4 +300,58 @@ const styles = StyleSheet.create({
   moveDisplayDivider: { fontSize: 20, color: '#5a5a7a', marginHorizontal: 8 },
   resultContainer: { alignItems: 'center', paddingVertical: 12 },
   resultText: { fontSize: 28, fontWeight: '700' },
-  resultMoves: { marginTop: 4 }
+  resultMoves: { marginTop: 4 },
+  resultMoveText: { fontSize: 16, color: '#5a5a7a' },
+  moveButtons: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    padding: 8,
+    gap: 12,
+  },
+  moveButton: {
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderRadius: 12,
+    width: 70,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  selectedMove: {
+    borderColor: '#e94560',
+    backgroundColor: 'rgba(233, 69, 96, 0.1)',
+  },
+  disabledMove: { opacity: 0.3 },
+  moveIcon: { fontSize: 28, marginBottom: 2 },
+  moveName: { fontSize: 10, color: '#5a5a7a', fontWeight: '500', textTransform: 'uppercase' },
+  pvpContainer: { padding: 8 },
+  pvpSection: { marginBottom: 8 },
+  pvpLabel: {
+    fontSize: 12,
+    color: '#5a5a7a',
+    textAlign: 'center',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  pvpDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginVertical: 4 },
+  statusContainer: { alignItems: 'center', padding: 16 },
+  statusText: { fontSize: 16, color: '#5a5a7a' },
+  clearButton: {
+    backgroundColor: '#e94560',
+    marginHorizontal: 16,
+    padding: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  clearButtonText: { fontSize: 16, fontWeight: '600', color: '#ffffff' },
+  historyContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    gap: 8,
+  },
+  historyText: { fontSize: 12, color: '#5a5a7a' },
+  historyDots: { flexDirection: 'row', gap: 6 },
+  historyDot: { width: 10, height: 10, borderRadius: 5 },
+});

@@ -1,26 +1,10 @@
 import React from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  SafeAreaView,
-  ScrollView,
-} from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, ScrollView } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import {
-  Bot,
-  Users,
-  Wifi,
-  Brain,
-  Settings,
-  ArrowRight,
-} from 'lucide-react-native';
-
-type Navigation = { navigate: (screen: string, params?: any) => void };
+import { Bot, Users, Wifi, Brain, Sparkles, Settings, ArrowRight } from 'lucide-react-native';
 
 export default function HomeScreen() {
-  const navigation = useNavigation<Navigation>();
+  const navigation = useNavigation<any>();
 
   const menuItems = [
     {
@@ -29,8 +13,7 @@ export default function HomeScreen() {
       subtitle: 'Challenge the adaptive computer',
       icon: Bot,
       color: '#e94560',
-      screen: 'Game',
-      params: { mode: 'pvc' },
+      mode: 'pvc',
     },
     {
       id: 'pvp',
@@ -38,8 +21,7 @@ export default function HomeScreen() {
       subtitle: 'Play on the same device',
       icon: Users,
       color: '#4facfe',
-      screen: 'Game',
-      params: { mode: 'pvp' },
+      mode: 'pvp',
     },
     {
       id: 'online',
@@ -47,8 +29,8 @@ export default function HomeScreen() {
       subtitle: 'Challenge players worldwide',
       icon: Wifi,
       color: '#4ade80',
+      mode: null,
       screen: 'OnlineLobby',
-      params: {},
     },
     {
       id: 'profile',
@@ -56,10 +38,27 @@ export default function HomeScreen() {
       subtitle: 'Customize your AI champion',
       icon: Brain,
       color: '#fbbf24',
+      mode: null,
       screen: 'Profile',
-      params: {},
+    },
+    {
+      id: 'training',
+      title: 'Training',
+      subtitle: 'Train your AI',
+      icon: Sparkles,
+      color: '#a78bfa',
+      mode: null,
+      screen: 'Training',
     },
   ];
+
+  const handlePress = (item: typeof menuItems[0]) => {
+    if (item.mode) {
+      navigation.navigate('Game', { mode: item.mode });
+    } else {
+      navigation.navigate(item.screen);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -86,7 +85,7 @@ export default function HomeScreen() {
             <TouchableOpacity
               key={item.id}
               style={styles.menuCard}
-              onPress={() => navigation.navigate(item.screen, item.params)}
+              onPress={() => handlePress(item)}
               activeOpacity={0.7}
             >
               <View style={[styles.iconContainer, { backgroundColor: item.color + '20' }]}>
@@ -106,7 +105,10 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0a0f' },
+  container: {
+    flex: 1,
+    backgroundColor: '#0a0a0f',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -117,14 +119,28 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  title: { fontSize: 28, fontWeight: '800', color: '#ffffff', letterSpacing: -0.5 },
-  subtitle: { fontSize: 14, color: '#5a5a7a', marginTop: 2, letterSpacing: 0.5 },
+  title: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#5a5a7a',
+    marginTop: 2,
+    letterSpacing: 0.5,
+  },
   settingsButton: {
     padding: 8,
     borderRadius: 12,
     backgroundColor: 'rgba(255,255,255,0.03)',
   },
-  menuContainer: { padding: 16, paddingBottom: 40, gap: 12 },
+  menuContainer: {
+    padding: 16,
+    paddingBottom: 40,
+    gap: 12,
+  },
   menuCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -142,7 +158,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  menuContent: { flex: 1 },
-  menuTitle: { fontSize: 16, fontWeight: '600', color: '#ffffff', letterSpacing: -0.2 },
-  menuSubtitle: { fontSize: 13, color: '#5a5a7a', marginTop: 1 },
+  menuContent: {
+    flex: 1,
+  },
+  menuTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+    letterSpacing: -0.2,
+  },
+  menuSubtitle: {
+    fontSize: 13,
+    color: '#5a5a7a',
+    marginTop: 1,
+  },
 });

@@ -26,22 +26,18 @@ export const useAvatarStore = create<AvatarState & AvatarActions>((set, get) => 
     }));
   },
 
-  selectAvatar: (id: string) => {
-    set({ selectedAvatarId: id });
-  },
+  selectAvatar: (id: string) => set({ selectedAvatarId: id }),
 
-  updateAvatarAfterMatch: (id: string, result: 'win' | 'lose' | 'tie') => {
+  updateAvatarAfterMatch: (id, result) => {
     set((state) => {
       const avatar = state.avatars.find(a => a.id === id);
       if (!avatar) return state;
       const updated = updateAvatarStats(avatar, result);
-      return {
-        avatars: state.avatars.map(a => a.id === id ? updated : a),
-      };
+      return { avatars: state.avatars.map(a => a.id === id ? updated : a) };
     });
   },
 
-  deleteAvatar: (id: string) => {
+  deleteAvatar: (id) => {
     set((state) => ({
       avatars: state.avatars.filter(a => a.id !== id),
       selectedAvatarId: state.selectedAvatarId === id ? null : state.selectedAvatarId,

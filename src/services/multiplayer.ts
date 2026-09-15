@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 
 let socket: Socket | null = null;
-const SERVER_URL = 'https://your-server.onrender.com';
+const SERVER_URL = 'https://rps-arena-server-2mxh.onrender.com';
 
 export function connectToServer(): Promise<Socket> {
   return new Promise((resolve, reject) => {
@@ -14,6 +14,7 @@ export function connectToServer(): Promise<Socket> {
       transports: ['websocket'],
       reconnection: true,
       reconnectionAttempts: 5,
+      timeout: 60000,
     });
 
     socket.on('connect', () => resolve(socket!));

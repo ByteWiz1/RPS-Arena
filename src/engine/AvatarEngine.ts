@@ -23,11 +23,6 @@ export function calculateLevel(xp: number): number {
   return 1;
 }
 
-export function getXPForLevel(level: number): number {
-  const levels = [0, 100, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000];
-  return levels[level - 1] || 50000;
-}
-
 export function createAvatar(name: string, difficulty: AIDifficulty = 'medium'): Avatar {
   return {
     id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
@@ -51,18 +46,16 @@ export function updateAvatarStats(avatar: Avatar, result: 'win' | 'lose' | 'tie'
   if (result === 'win') {
     updated.wins++;
     updated.xp += 20;
+    updated.rating += 10;
   } else if (result === 'lose') {
     updated.losses++;
     updated.xp += 5;
+    updated.rating = Math.max(0, updated.rating - 10);
   } else {
     updated.ties++;
     updated.xp += 10;
   }
 
-  if (result === 'win') updated.rating += 10;
-  else if (result === 'lose') updated.rating = Math.max(0, updated.rating - 10);
-
   updated.level = calculateLevel(updated.xp);
-
   return updated;
 }
