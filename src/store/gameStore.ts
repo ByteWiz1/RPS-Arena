@@ -15,6 +15,8 @@ interface GameState {
   player2Move: Move | null;
   player1Score: number;
   player2Score: number;
+  player1Ties: number;
+  player2Ties: number;
   round: number;
   history: RoundEntry[];
   isPlaying: boolean;
@@ -40,6 +42,8 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
   player2Move: null,
   player1Score: 0,
   player2Score: 0,
+  player1Ties: 0,
+  player2Ties: 0,
   round: 0,
   history: [],
   isPlaying: false,
@@ -49,7 +53,20 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
 
   setMode: (mode) => {
     const ai = new AdaptiveAI('AI Opponent', get().aiDifficulty);
-    set({ mode, ai, player1Move: null, player2Move: null, player1Score: 0, player2Score: 0, round: 0, history: [], isPlaying: false, winner: null });
+    set({
+      mode,
+      ai,
+      player1Move: null,
+      player2Move: null,
+      player1Score: 0,
+      player2Score: 0,
+      player1Ties: 0,
+      player2Ties: 0,
+      round: 0,
+      history: [],
+      isPlaying: false,
+      winner: null,
+    });
   },
 
   setAIDifficulty: (difficulty) => {
@@ -97,23 +114,55 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       player2Move,
       result,
     }];
+
+    let newP1Score = state.player1Score;
+    let newP2Score = state.player2Score;
+    let newP1Ties = state.player1Ties;
+    let newP2Ties = state.player2Ties;
+
+    if (result === 'win') newP1Score++;
+    else if (result === 'lose') newP2Score++;
+    else {
+      newP1Ties++;
+      newP2Ties++;
+    }
+
     set({
       round: state.round + 1,
       history: newHistory,
       winner: result,
       isPlaying: false,
-      player1Score: result === 'win' ? state.player1Score + 1 : state.player1Score,
-      player2Score: result === 'lose' ? state.player2Score + 1 : state.player2Score,
+      player1Score: newP1Score,
+      player2Score: newP2Score,
+      player1Ties: newP1Ties,
+      player2Ties: newP2Ties,
     });
     setTimeout(() => get().clearMoves(), 1500);
   },
 
-  clearMoves: () => set({ player1Move: null, player2Move: null, winner: null, isPlaying: false }),
+  clearMoves: () => set({
+    player1Move: null,
+    player2Move: null,
+    winner: null,
+    isPlaying: false,
+  }),
 
   resetGame: () => {
     const { aiDifficulty } = get();
     const ai = new AdaptiveAI('AI Opponent', aiDifficulty);
-    set({ player1Move: null, player2Move: null, player1Score: 0, player2Score: 0, round: 0, history: [], isPlaying: false, winner: null, ai });
+    set({
+      player1Move: null,
+      player2Move: null,
+      player1Score: 0,
+      player2Score: 0,
+      player1Ties: 0,
+      player2Ties: 0,
+      round: 0,
+      history: [],
+      isPlaying: false,
+      winner: null,
+      ai,
+    });
   },
 
   getResultText: () => {

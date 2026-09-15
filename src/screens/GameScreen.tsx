@@ -6,24 +6,30 @@ import {
   StyleSheet,
   SafeAreaView,
   Vibration,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useGameStore } from '../store/gameStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { ALL_MOVES, MOVE_ICONS, MOVE_NAMES, Move } from '../engine/GameEngine';
 import { ChevronLeft, RotateCcw } from 'lucide-react-native';
 import AIDifficultySelector from '../components/AIDifficultySelector';
+import { playBackground, stopBackground, playSound } from '../services/audio';
 
 export default function GameScreen() {
   const navigation = useNavigation();
   const route = useRoute<any>();
   const mode = route.params?.mode || 'pvc';
   const [showAISettings, setShowAISettings] = useState(false);
+  const { vibrationEnabled } = useSettingsStore();
 
   const {
     player1Move,
     player2Move,
     player1Score,
     player2Score,
+    player1Ties,
+    player2Ties,
     round,
     history,
     isPlaying,
@@ -40,22 +46,35 @@ export default function GameScreen() {
   useEffect(() => {
     setMode(mode);
     resetGame();
+    playBackground();
+    return () => {
+      stopBackground();
+    };
   }, [mode]);
+
+  useEffect(() => {
+    if (winner) {
+      if (winner === 'win') playSound('success');
+      else if (winner === 'lose') playSound('fail');
+      else playSound('tie');
+    }
+  }, [winner]);
 
   const handlePlayerMove = (player: 1 | 2, move: Move) => {
     if (isPlaying) return;
+
+    playSound('click');
+    if (vibrationEnabled) Vibration.vibrate(10);
 
     if (mode === 'pvp') {
       if (player === 1 && player1Move) return;
       if (player === 2 && player2Move) return;
       setPlayerMove(player, move);
-      Vibration.vibrate(10);
       return;
     }
 
     if (player === 1 && !player1Move) {
       setPlayerMove(1, move);
-      Vibration.vibrate(10);
       setTimeout(() => playAIMove(), 300);
     }
   };
@@ -135,99 +154,103 @@ export default function GameScreen() {
         </View>
       )}
 
-      <View style={styles.scoreContainer}>
-        <View style={styles.scoreItem}>
-          <Text style={styles.scoreName}>{getPlayerName(1)}</Text>
-          <Text style={styles.scoreValue}>{player1Score}</Text>
-        </View>
-        <View style={styles.scoreDivider}>
-          <Text style={styles.scoreVs}>⚡</Text>
-          <Text style={styles.scoreRound}>R{round}</Text>
-        </View>
-        <View style={styles.scoreItem}>
-          <Text style={styles.scoreName}>{getPlayerName(2)}</Text>
-          <Text style={styles.scoreValue}>{player2Score}</Text>
-        </View>
-      </View>
-
-      <View style={styles.moveDisplay}>
-        <View style={styles.moveDisplayItem}>
-          <Text style={styles.moveDisplayLabel}>{getPlayerName(1)}</Text>
-          <View style={styles.moveDisplayCircle}>
-            <Text style={styles.moveDisplayIcon}>
-              {player1Move ? MOVE_ICONS[player1Move] : '❓'}
-            </Text>
+      <ScrollView contentContainerStyle={styles.scrollContent}>
+        <View style={styles.scoreContainer}>
+          <View style={styles.scoreItem}>
+            <Text style={styles.scoreName}>{getPlayerName(1)}</Text>
+            <Text style={styles.scoreValue}>{player1Score}</Text>
+            <Text style={styles.scoreTies}>{player1Ties} ties</Text>
+          </View>
+          <View style={styles.scoreDivider}>
+            <Text style={styles.scoreVs}>⚡</Text>
+            <Text style={styles.scoreRound}>R{round}</Text>
+          </View>
+          <View style={styles.scoreItem}>
+            <Text style={styles.scoreName}>{getPlayerName(2)}</Text>
+            <Text style={styles.scoreValue}>{player2Score}</Text>
+            <Text style={styles.scoreTies}>{player2Ties} ties</Text>
           </View>
         </View>
-        <Text style={styles.moveDisplayDivider}>⚡</Text>
-        <View style={styles.moveDisplayItem}>
-          <Text style={styles.moveDisplayLabel}>{getPlayerName(2)}</Text>
-          <View style={styles.moveDisplayCircle}>
-            <Text style={styles.moveDisplayIcon}>
-              {player2Move ? MOVE_ICONS[player2Move] : '❓'}
-            </Text>
-          </View>
-        </View>
-      </View>
 
-      {renderResult()}
-
-      {!isPlaying && !winner && (
-        <>
-          {mode === 'pvc' ? (
-            <View style={styles.moveButtons}>
-              {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+        <View style={styles.moveDisplay}>
+          <View style={styles.moveDisplayItem}>
+            <Text style={styles.moveDisplayLabel}>{getPlayerName(1)}</Text>
+            <View style={styles.moveDisplayCircle}>
+              <Text style={styles.moveDisplayIcon}>
+                {player1Move ? MOVE_ICONS[player1Move] : '❓'}
+              </Text>
             </View>
-          ) : (
-            <View style={styles.pvpContainer}>
-              <View style={styles.pvpSection}>
-                <Text style={styles.pvpLabel}>Player 1</Text>
-                <View style={styles.moveButtons}>
-                  {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+          </View>
+          <Text style={styles.moveDisplayDivider}>⚡</Text>
+          <View style={styles.moveDisplayItem}>
+            <Text style={styles.moveDisplayLabel}>{getPlayerName(2)}</Text>
+            <View style={styles.moveDisplayCircle}>
+              <Text style={styles.moveDisplayIcon}>
+                {player2Move ? MOVE_ICONS[player2Move] : '❓'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {renderResult()}
+
+        {!isPlaying && !winner && (
+          <>
+            {mode === 'pvc' ? (
+              <View style={styles.moveButtons}>
+                {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+              </View>
+            ) : (
+              <View style={styles.pvpContainer}>
+                <View style={styles.pvpSection}>
+                  <Text style={styles.pvpLabel}>Player 1</Text>
+                  <View style={styles.moveButtons}>
+                    {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+                  </View>
+                </View>
+                <View style={styles.pvpDivider} />
+                <View style={styles.pvpSection}>
+                  <Text style={styles.pvpLabel}>Player 2</Text>
+                  <View style={styles.moveButtons}>
+                    {ALL_MOVES.map((move) => renderMoveButton(move, 2))}
+                  </View>
                 </View>
               </View>
-              <View style={styles.pvpDivider} />
-              <View style={styles.pvpSection}>
-                <Text style={styles.pvpLabel}>Player 2</Text>
-                <View style={styles.moveButtons}>
-                  {ALL_MOVES.map((move) => renderMoveButton(move, 2))}
-                </View>
-              </View>
-            </View>
-          )}
-        </>
-      )}
+            )}
+          </>
+        )}
 
-      {isPlaying && (
-        <View style={styles.statusContainer}>
-          <Text style={styles.statusText}>⏳ Thinking...</Text>
-        </View>
-      )}
-
-      {player1Move && player2Move && !isPlaying && winner && (
-        <TouchableOpacity style={styles.clearButton} onPress={clearMoves}>
-          <Text style={styles.clearButtonText}>Next Round →</Text>
-        </TouchableOpacity>
-      )}
-
-      {history.length > 0 && (
-        <View style={styles.historyContainer}>
-          <Text style={styles.historyText}>Last {Math.min(history.length, 5)} rounds:</Text>
-          <View style={styles.historyDots}>
-            {history.slice(-5).map((entry, i) => (
-              <View key={i} style={[
-                styles.historyDot,
-                {
-                  backgroundColor:
-                    entry.result === 'win' ? '#4ade80' :
-                      entry.result === 'lose' ? '#f87171' :
-                        '#fbbf24'
-                }
-              ]} />
-            ))}
+        {isPlaying && (
+          <View style={styles.statusContainer}>
+            <Text style={styles.statusText}>⏳ Thinking...</Text>
           </View>
-        </View>
-      )}
+        )}
+
+        {player1Move && player2Move && !isPlaying && winner && (
+          <TouchableOpacity style={styles.clearButton} onPress={clearMoves}>
+            <Text style={styles.clearButtonText}>Next Round →</Text>
+          </TouchableOpacity>
+        )}
+
+        {history.length > 0 && (
+          <View style={styles.historyContainer}>
+            <Text style={styles.historyText}>Last {Math.min(history.length, 5)} rounds:</Text>
+            <View style={styles.historyDots}>
+              {history.slice(-5).map((entry, i) => (
+                <View key={i} style={[
+                  styles.historyDot,
+                  {
+                    backgroundColor:
+                      entry.result === 'win' ? '#4ade80' :
+                        entry.result === 'lose' ? '#f87171' :
+                          '#fbbf24'
+                  }
+                ]} />
+              ))}
+            </View>
+          </View>
+        )}
+      </ScrollView>
 
       <AIDifficultySelector
         visible={showAISettings}
@@ -239,15 +262,8 @@ export default function GameScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0a0a0f' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.04)',
-  },
+  scrollContent: { paddingBottom: 40 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.04)' },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   backButton: { padding: 8 },
   headerTitle: { fontSize: 18, fontWeight: '600', color: '#ffffff' },
@@ -256,101 +272,39 @@ const styles = StyleSheet.create({
   aiButtonText: { fontSize: 20 },
   aiStatsContainer: { paddingHorizontal: 16, paddingVertical: 6, alignItems: 'center' },
   aiStatsText: { fontSize: 12, color: '#5a5a7a' },
-  scoreContainer: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    margin: 16,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
+  scoreContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, margin: 16, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
   scoreItem: { alignItems: 'center', flex: 1 },
   scoreName: { fontSize: 12, color: '#5a5a7a', marginBottom: 4, textTransform: 'uppercase' },
   scoreValue: { fontSize: 36, fontWeight: '700', color: '#ffffff' },
+  scoreTies: { fontSize: 11, color: '#5a5a7a', marginTop: 2 },
   scoreDivider: { alignItems: 'center' },
   scoreVs: { fontSize: 20, color: '#e94560' },
   scoreRound: { fontSize: 12, color: '#5a5a7a', marginTop: 2 },
-  moveDisplay: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: 16,
-    marginHorizontal: 16,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.04)',
-  },
+  moveDisplay: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, marginHorizontal: 16, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 16, borderWidth: 1, borderColor: 'rgba(255,255,255,0.04)' },
   moveDisplayItem: { alignItems: 'center', flex: 1 },
   moveDisplayLabel: { fontSize: 12, color: '#5a5a7a', marginBottom: 8, textTransform: 'uppercase' },
-  moveDisplayCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
+  moveDisplayCircle: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(255,255,255,0.05)', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: 'rgba(255,255,255,0.08)' },
   moveDisplayIcon: { fontSize: 40 },
   moveDisplayDivider: { fontSize: 20, color: '#5a5a7a', marginHorizontal: 8 },
   resultContainer: { alignItems: 'center', paddingVertical: 12 },
   resultText: { fontSize: 28, fontWeight: '700' },
   resultMoves: { marginTop: 4 },
   resultMoveText: { fontSize: 16, color: '#5a5a7a' },
-  moveButtons: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    padding: 8,
-    gap: 12,
-  },
-  moveButton: {
-    alignItems: 'center',
-    padding: 12,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    borderRadius: 12,
-    width: 70,
-    borderWidth: 2,
-    borderColor: 'transparent',
-  },
-  selectedMove: {
-    borderColor: '#e94560',
-    backgroundColor: 'rgba(233, 69, 96, 0.1)',
-  },
+  moveButtons: { flexDirection: 'row', justifyContent: 'center', padding: 8, gap: 12 },
+  moveButton: { alignItems: 'center', padding: 12, backgroundColor: 'rgba(255,255,255,0.03)', borderRadius: 12, width: 70, borderWidth: 2, borderColor: 'transparent' },
+  selectedMove: { borderColor: '#e94560', backgroundColor: 'rgba(233, 69, 96, 0.1)' },
   disabledMove: { opacity: 0.3 },
   moveIcon: { fontSize: 28, marginBottom: 2 },
   moveName: { fontSize: 10, color: '#5a5a7a', fontWeight: '500', textTransform: 'uppercase' },
   pvpContainer: { padding: 8 },
   pvpSection: { marginBottom: 8 },
-  pvpLabel: {
-    fontSize: 12,
-    color: '#5a5a7a',
-    textAlign: 'center',
-    marginBottom: 4,
-    textTransform: 'uppercase',
-  },
+  pvpLabel: { fontSize: 12, color: '#5a5a7a', textAlign: 'center', marginBottom: 4, textTransform: 'uppercase' },
   pvpDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginVertical: 4 },
   statusContainer: { alignItems: 'center', padding: 16 },
   statusText: { fontSize: 16, color: '#5a5a7a' },
-  clearButton: {
-    backgroundColor: '#e94560',
-    marginHorizontal: 16,
-    padding: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
+  clearButton: { backgroundColor: '#e94560', marginHorizontal: 16, padding: 14, borderRadius: 12, alignItems: 'center' },
   clearButtonText: { fontSize: 16, fontWeight: '600', color: '#ffffff' },
-  historyContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 16,
-    gap: 8,
-  },
+  historyContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, gap: 8 },
   historyText: { fontSize: 12, color: '#5a5a7a' },
   historyDots: { flexDirection: 'row', gap: 6 },
   historyDot: { width: 10, height: 10, borderRadius: 5 },
