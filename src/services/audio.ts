@@ -5,12 +5,12 @@ let bgmVolume = 0.7;
 let sfxVolume = 0.9;
 
 const SOUNDS = {
-  bgm1: require('../../assets/sounds/bgm1.mp3'),
-  bgm2: require('../../assets/sounds/bgm2.mp3'),
-  bgm3: require('../../assets/sounds/bgm3.mp3'),
-  success: require('../../assets/sounds/success.mp3'),
-  fail: require('../../assets/sounds/fail.mp3'),
-  tie: require('../../assets/sounds/tie.mp3'),
+  bgm1: require('../../assets/sounds/bgm1.wav'),
+  bgm2: require('../../assets/sounds/bgm2.wav'),
+  bgm3: require('../../assets/sounds/bgm3.wav'),
+  success: require('../../assets/sounds/success.wav'),
+  fail: require('../../assets/sounds/fail.wav'),
+  tie: require('../../assets/sounds/tie.wav'),
   click: require('../../assets/sounds/click.mp3'),
 };
 
