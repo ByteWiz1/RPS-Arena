@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { Move, GameMode, Result, getWinner } from '../engine/GameEngine';
-import { AdaptiveAI, AIDifficulty } from '../engine/AIEngine';
+import { AdaptiveAI, AIDifficulty, AIPersonality } from '../engine/AIEngine';
 
 export interface RoundEntry {
   round: number;
@@ -28,6 +28,7 @@ interface GameState {
 interface GameActions {
   setMode: (mode: GameMode) => void;
   setAIDifficulty: (difficulty: AIDifficulty) => void;
+  setAIPersonality: (personality: AIPersonality) => void;
   setPlayerMove: (player: 1 | 2, move: Move) => void;
   playRound: () => void;
   playAIMove: () => void;
@@ -74,6 +75,16 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     set({ aiDifficulty: difficulty, ai });
   },
 
+  setAIPersonality: (personality) => {
+    const { ai, aiDifficulty } = get();
+    if (ai) {
+      ai.setPersonality(personality);
+    } else {
+      const newAI = new AdaptiveAI('AI Opponent', aiDifficulty, personality);
+      set({ ai: newAI });
+    }
+  },
+
   setPlayerMove: (player, move) => {
     const state = get();
     if (state.isPlaying) return;
@@ -103,17 +114,22 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
     const state = get();
     const { player1Move, player2Move, ai } = state;
     if (!player1Move || !player2Move) return;
+
     const result = getWinner(player1Move, player2Move);
     if (ai) {
       const aiResult = result === 'win' ? 'lose' : result === 'lose' ? 'win' : 'tie';
       ai.recordResult(aiResult);
     }
-    const newHistory = [...state.history, {
-      round: state.round + 1,
-      player1Move,
-      player2Move,
-      result,
-    }];
+
+    const newHistory = [
+      ...state.history,
+      {
+        round: state.round + 1,
+        player1Move,
+        player2Move,
+        result,
+      },
+    ];
 
     let newP1Score = state.player1Score;
     let newP2Score = state.player2Score;
@@ -137,15 +153,17 @@ export const useGameStore = create<GameState & GameActions>((set, get) => ({
       player1Ties: newP1Ties,
       player2Ties: newP2Ties,
     });
+
     setTimeout(() => get().clearMoves(), 1500);
   },
 
-  clearMoves: () => set({
-    player1Move: null,
-    player2Move: null,
-    winner: null,
-    isPlaying: false,
-  }),
+  clearMoves: () =>
+    set({
+      player1Move: null,
+      player2Move: null,
+      winner: null,
+      isPlaying: false,
+    }),
 
   resetGame: () => {
     const { aiDifficulty } = get();

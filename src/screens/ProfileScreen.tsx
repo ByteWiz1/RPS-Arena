@@ -1,23 +1,35 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TextInput,
   Alert,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { useAvatarStore } from '../store/avatarStore';
 import { ChevronLeft, Plus, Trash2 } from 'lucide-react-native';
+import { useAvatarStore } from '../store/avatarStore';
+import { getRatingTier } from '../engine/AvatarEngine';
+import { startMenuMusic } from '../services/audio';
 
 export default function ProfileScreen() {
-  const navigation = useNavigation();
-  const { avatars, selectedAvatarId, createNewAvatar, selectAvatar, deleteAvatar } = useAvatarStore();
+  const navigation = useNavigation<any>();
+  const {
+    avatars,
+    selectedAvatarId,
+    createNewAvatar,
+    selectAvatar,
+    deleteAvatar,
+  } = useAvatarStore();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+
+  useEffect(() => {
+    startMenuMusic();
+  }, []);
 
   const handleCreateAvatar = () => {
     if (!newName.trim()) {
@@ -30,18 +42,14 @@ export default function ProfileScreen() {
   };
 
   const handleDeleteAvatar = (id: string) => {
-    Alert.alert(
-      'Delete Avatar',
-      'Are you sure you want to delete this avatar?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => deleteAvatar(id) },
-      ]
-    );
+    Alert.alert('Delete Avatar', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => deleteAvatar(id) },
+    ]);
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
           <ChevronLeft size={28} color="#e94560" />
@@ -52,49 +60,63 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
         {avatars.length === 0 ? (
           <View style={styles.emptyContainer}>
             <Text style={styles.emptyEmoji}>🤖</Text>
             <Text style={styles.emptyTitle}>No Avatars Yet</Text>
-            <Text style={styles.emptyText}>Create your first AI champion to get started</Text>
+            <Text style={styles.emptyText}>Create your first AI champion</Text>
             <TouchableOpacity style={styles.createButton} onPress={() => setShowCreate(true)}>
               <Text style={styles.createButtonText}>Create Avatar</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          avatars.map((avatar) => (
-            <TouchableOpacity
-              key={avatar.id}
-              style={[
-                styles.avatarCard,
-                selectedAvatarId === avatar.id && styles.avatarCardSelected,
-              ]}
-              onPress={() => selectAvatar(avatar.id)}
-            >
-              <View style={styles.avatarInfo}>
-                <Text style={styles.avatarEmoji}>🤖</Text>
-                <View style={styles.avatarDetails}>
-                  <Text style={styles.avatarName}>{avatar.name}</Text>
-                  <Text style={styles.avatarStats}>
-                    Level {avatar.level} • {avatar.wins}W {avatar.losses}L {avatar.ties}T
-                  </Text>
-                  <Text style={styles.avatarRating}>⭐ {avatar.rating}</Text>
-                </View>
-              </View>
-              {selectedAvatarId === avatar.id && (
-                <View style={styles.selectedBadge}>
-                  <Text style={styles.selectedText}>Selected</Text>
-                </View>
-              )}
+          avatars.map((avatar) => {
+            const tier = getRatingTier(avatar.rating);
+            return (
               <TouchableOpacity
-                style={styles.deleteButton}
-                onPress={() => handleDeleteAvatar(avatar.id)}
+                key={avatar.id}
+                style={[
+                  styles.avatarCard,
+                  selectedAvatarId === avatar.id && styles.avatarCardSelected,
+                ]}
+                onPress={() => selectAvatar(avatar.id)}
               >
-                <Trash2 size={20} color="#f87171" />
+                <View style={styles.avatarInfo}>
+                  <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
+                  <View style={styles.avatarDetails}>
+                    <Text style={styles.avatarName}>{avatar.name}</Text>
+                    <Text style={styles.avatarStats}>
+  Level {avatar.level} • {avatar.wins}W {avatar.losses}L {avatar.ties}T
+</Text>
+<Text style={[styles.avatarRating, { color: tier.color }]}>
+  {tier.emoji} {tier.name} • {avatar.rating}
+</Text>
+{avatar.bestStreak >= 3 && (
+  <Text style={styles.avatarStreak}>
+    🔥 Best: {avatar.bestStreak}W streak
+  </Text>
+)}
+                  </View>
+                </View>
+                {selectedAvatarId === avatar.id && (
+                  <View style={styles.selectedBadge}>
+                    <Text style={styles.selectedText}>Selected</Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={styles.deleteButton}
+                  onPress={() => handleDeleteAvatar(avatar.id)}
+                >
+                  <Trash2 size={20} color="#f87171" />
+                </TouchableOpacity>
               </TouchableOpacity>
-            </TouchableOpacity>
-          ))
+            );
+          })
         )}
       </ScrollView>
 
@@ -109,6 +131,7 @@ export default function ProfileScreen() {
               value={newName}
               onChangeText={setNewName}
               autoFocus
+              maxLength={15}
             />
             <View style={styles.modalButtons}>
               <TouchableOpacity
@@ -148,11 +171,12 @@ const styles = StyleSheet.create({
   backButton: { padding: 8 },
   headerTitle: { fontSize: 18, fontWeight: '600', color: '#ffffff' },
   addButton: { padding: 8 },
-  content: { padding: 16, paddingBottom: 40 },
-  emptyContainer: { alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
+  scroll: { flex: 1 },
+  scrollContent: { flexGrow: 1, padding: 16, paddingBottom: 40 },
+  emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 60 },
   emptyEmoji: { fontSize: 64, marginBottom: 16 },
   emptyTitle: { fontSize: 20, fontWeight: '700', color: '#ffffff', marginBottom: 8 },
-  emptyText: { fontSize: 14, color: '#5a5a7a', textAlign: 'center', marginBottom: 24 },
+  emptyText: { fontSize: 14, color: '#5a5a7a', marginBottom: 24 },
   createButton: { backgroundColor: '#e94560', paddingHorizontal: 32, paddingVertical: 12, borderRadius: 12 },
   createButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
   avatarCard: {
@@ -172,8 +196,14 @@ const styles = StyleSheet.create({
   avatarDetails: { flex: 1 },
   avatarName: { fontSize: 16, fontWeight: '600', color: '#ffffff' },
   avatarStats: { fontSize: 12, color: '#5a5a7a', marginTop: 2 },
-  avatarRating: { fontSize: 12, color: '#fbbf24', marginTop: 2 },
+  avatarRating: { fontSize: 12, fontWeight: '600', marginTop: 2 },
   selectedBadge: { backgroundColor: '#e94560', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, marginRight: 8 },
+  avatarStreak: {
+  fontSize: 11,
+  color: '#fbbf24',
+  fontWeight: '700',
+  marginTop: 2,
+},
   selectedText: { color: '#ffffff', fontSize: 10, fontWeight: '600', textTransform: 'uppercase' },
   deleteButton: { padding: 8 },
   modalOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
