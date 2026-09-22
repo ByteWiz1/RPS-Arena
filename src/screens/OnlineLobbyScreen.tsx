@@ -668,6 +668,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
+    inputError: {
+    borderColor: '#f87171',
+    backgroundColor: 'rgba(248, 113, 113, 0.08)',
+  },
+  errorText: {
+    color: '#f87171',
+    fontSize: 12,
+    marginBottom: 10,
+    marginLeft: 4,
+    fontWeight: '600',
+  },
   codeButton: {
     flexDirection: 'row',
     alignItems: 'center',
