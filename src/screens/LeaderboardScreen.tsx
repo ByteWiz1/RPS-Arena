@@ -4,8 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Platform,
-  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -13,12 +11,14 @@ import { ChevronLeft, Trophy, Swords, Medal, TrendingUp } from 'lucide-react-nat
 import { useAvatarStore } from '../store/avatarStore';
 import { getRatingTier } from '../engine/AvatarEngine';
 import { startMenuMusic } from '../services/audio';
+import ScreenContainer from '../components/ScreenContainer';
+import ScreenScroll from '../components/ScreenScroll';
 
 type Tab = 'leaderboard' | 'history';
 
 export default function LeaderboardScreen() {
   const navigation = useNavigation<any>();
-  const { avatars, matchHistory, getRecentMatches } = useAvatarStore();
+  const { avatars, getRecentMatches } = useAvatarStore();
   const [tab, setTab] = useState<Tab>('leaderboard');
 
   useEffect(() => {
@@ -29,22 +29,19 @@ export default function LeaderboardScreen() {
   const recentMatches = getRecentMatches(30);
 
   const formatTime = (ts: number) => {
-    const date = new Date(ts);
-    const now = new Date();
-    const diffMs = now.getTime() - ts;
-    const diffMin = Math.floor(diffMs / 60000);
+    const now = Date.now();
+    const diffMin = Math.floor((now - ts) / 60000);
     const diffHr = Math.floor(diffMin / 60);
     const diffDay = Math.floor(diffHr / 24);
-
     if (diffMin < 1) return 'Just now';
     if (diffMin < 60) return `${diffMin}m ago`;
     if (diffHr < 24) return `${diffHr}h ago`;
     if (diffDay < 7) return `${diffDay}d ago`;
-    return date.toLocaleDateString();
+    return new Date(ts).toLocaleDateString();
   };
 
   return (
-    <View style={styles.container}>
+    <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
@@ -63,9 +60,7 @@ export default function LeaderboardScreen() {
             onPress={() => setTab('leaderboard')}
           >
             <Trophy size={16} color={tab === 'leaderboard' ? '#fbbf24' : '#5a5a7a'} />
-            <Text
-              style={[styles.tabText, tab === 'leaderboard' && styles.tabTextActive]}
-            >
+            <Text style={[styles.tabText, tab === 'leaderboard' && styles.tabTextActive]}>
               Leaderboard
             </Text>
           </TouchableOpacity>
@@ -74,19 +69,13 @@ export default function LeaderboardScreen() {
             onPress={() => setTab('history')}
           >
             <Swords size={16} color={tab === 'history' ? '#e94560' : '#5a5a7a'} />
-            <Text
-              style={[styles.tabText, tab === 'history' && styles.tabTextActive]}
-            >
+            <Text style={[styles.tabText, tab === 'history' && styles.tabTextActive]}>
               History
             </Text>
           </TouchableOpacity>
         </View>
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
+        <ScreenScroll contentStyle={styles.scrollContent} headerHeight={130}>
           {tab === 'leaderboard' ? (
             <>
               {sortedAvatars.length === 0 ? (
@@ -101,10 +90,7 @@ export default function LeaderboardScreen() {
                 sortedAvatars.map((avatar, index) => {
                   const tier = getRatingTier(avatar.rating);
                   const totalGames = avatar.wins + avatar.losses + avatar.ties;
-                  const winRate =
-                    totalGames > 0
-                      ? Math.round((avatar.wins / totalGames) * 100)
-                      : 0;
+                  const winRate = totalGames > 0 ? Math.round((avatar.wins / totalGames) * 100) : 0;
 
                   return (
                     <View
@@ -126,15 +112,12 @@ export default function LeaderboardScreen() {
                       <Text style={styles.avatarEmoji}>{avatar.emoji}</Text>
 
                       <View style={styles.avatarInfo}>
-                        <Text style={styles.avatarName} numberOfLines={1}>
-                          {avatar.name}
-                        </Text>
+                        <Text style={styles.avatarName} numberOfLines={1}>{avatar.name}</Text>
                         <Text style={[styles.avatarTier, { color: tier.color }]}>
                           {tier.emoji} {tier.name}
                         </Text>
                         <Text style={styles.avatarStats}>
-                          L{avatar.level} · {avatar.wins}W {avatar.losses}L{' '}
-                          {avatar.ties}T · {winRate}%
+                          L{avatar.level} · {avatar.wins}W {avatar.losses}L {avatar.ties}T · {winRate}%
                         </Text>
                       </View>
 
@@ -145,9 +128,7 @@ export default function LeaderboardScreen() {
                         {avatar.winStreak >= 3 && (
                           <View style={styles.streakBadge}>
                             <TrendingUp size={10} color="#fbbf24" />
-                            <Text style={styles.streakText}>
-                              {avatar.winStreak}
-                            </Text>
+                            <Text style={styles.streakText}>{avatar.winStreak}</Text>
                           </View>
                         )}
                       </View>
@@ -188,11 +169,7 @@ export default function LeaderboardScreen() {
                     >
                       <View style={styles.matchLeft}>
                         <Text style={styles.matchEmoji}>
-                          {match.result === 'win'
-                            ? '🎉'
-                            : match.result === 'lose'
-                            ? '😢'
-                            : '🤝'}
+                          {match.result === 'win' ? '🎉' : match.result === 'lose' ? '😢' : '🤝'}
                         </Text>
                         <View style={styles.matchInfo}>
                           <Text style={styles.matchOpponent} numberOfLines={1}>
@@ -204,41 +181,30 @@ export default function LeaderboardScreen() {
                           </Text>
                         </View>
                       </View>
-                      <View style={styles.matchRight}>
-                        <Text
-                          style={[
-                            styles.matchScore,
-                            match.result === 'win' && styles.matchScoreWin,
-                            match.result === 'lose' && styles.matchScoreLose,
-                            match.result === 'tie' && styles.matchScoreTie,
-                          ]}
-                        >
-                          {match.myScore} - {match.opponentScore}
-                        </Text>
-                      </View>
+                      <Text
+                        style={[
+                          styles.matchScore,
+                          match.result === 'win' && styles.matchScoreWin,
+                          match.result === 'lose' && styles.matchScoreLose,
+                          match.result === 'tie' && styles.matchScoreTie,
+                        ]}
+                      >
+                        {match.myScore}-{match.opponentScore}
+                      </Text>
                     </View>
                   );
                 })
               )}
             </>
           )}
-          <View style={{ height: 40 }} />
-        </ScrollView>
+        </ScreenScroll>
       </SafeAreaView>
-    </View>
+    </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0f',
-    ...(Platform.OS === 'web' ? { height: '100vh' as any } : {}),
-  },
-  safeArea: {
-    flex: 1,
-    ...(Platform.OS === 'web' ? { height: '100%' as any } : {}),
-  },
+  safeArea: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -259,12 +225,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     fontWeight: '600',
   },
-  tabBar: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    gap: 8,
-  },
+  tabBar: { flexDirection: 'row', paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
   tabBtn: {
     flex: 1,
     flexDirection: 'row',
@@ -277,10 +238,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.04)',
   },
-  tabBtnActive: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
+  tabBtnActive: { backgroundColor: 'rgba(255,255,255,0.06)', borderColor: 'rgba(255,255,255,0.1)' },
   tabText: {
     fontSize: 12,
     fontWeight: '700',
@@ -289,30 +247,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   tabTextActive: { color: '#ffffff' },
-  scroll: { flex: 1 },
-  scrollContent: {
-    paddingHorizontal: 12,
-    paddingTop: 4,
-    gap: 6,
-  },
-  emptyBox: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-    gap: 10,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-    marginTop: 8,
-  },
-  emptyText: {
-    fontSize: 12,
-    color: '#5a5a7a',
-    textAlign: 'center',
-    paddingHorizontal: 40,
-  },
+  scrollContent: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 40, gap: 6 },
+  emptyBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 80, gap: 10 },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#ffffff', marginTop: 8 },
+  emptyText: { fontSize: 12, color: '#5a5a7a', textAlign: 'center', paddingHorizontal: 40 },
   avatarRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -323,50 +261,18 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.04)',
     gap: 10,
   },
-  avatarRowGold: {
-    borderColor: 'rgba(251, 191, 36, 0.4)',
-    backgroundColor: 'rgba(251, 191, 36, 0.06)',
-  },
-  avatarRowSilver: {
-    borderColor: 'rgba(192, 192, 192, 0.3)',
-    backgroundColor: 'rgba(192, 192, 192, 0.04)',
-  },
-  avatarRowBronze: {
-    borderColor: 'rgba(205, 127, 50, 0.3)',
-    backgroundColor: 'rgba(205, 127, 50, 0.04)',
-  },
-  rankBox: {
-    width: 32,
-    alignItems: 'center',
-    gap: 2,
-  },
-  rankText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#8a8a9a',
-  },
+  avatarRowGold: { borderColor: 'rgba(251, 191, 36, 0.4)', backgroundColor: 'rgba(251, 191, 36, 0.06)' },
+  avatarRowSilver: { borderColor: 'rgba(192, 192, 192, 0.3)', backgroundColor: 'rgba(192, 192, 192, 0.04)' },
+  avatarRowBronze: { borderColor: 'rgba(205, 127, 50, 0.3)', backgroundColor: 'rgba(205, 127, 50, 0.04)' },
+  rankBox: { width: 32, alignItems: 'center', gap: 2 },
+  rankText: { fontSize: 13, fontWeight: '800', color: '#8a8a9a' },
   avatarEmoji: { fontSize: 28 },
   avatarInfo: { flex: 1 },
-  avatarName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  avatarTier: {
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 1,
-  },
-  avatarStats: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    marginTop: 2,
-  },
+  avatarName: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+  avatarTier: { fontSize: 11, fontWeight: '700', marginTop: 1 },
+  avatarStats: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
   ratingBox: { alignItems: 'flex-end', gap: 3 },
-  ratingValue: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
+  ratingValue: { fontSize: 18, fontWeight: '800' },
   streakBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -376,11 +282,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: 'rgba(251, 191, 36, 0.15)',
   },
-  streakText: {
-    fontSize: 10,
-    fontWeight: '800',
-    color: '#fbbf24',
-  },
+  streakText: { fontSize: 10, fontWeight: '800', color: '#fbbf24' },
   matchRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -391,42 +293,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.04)',
   },
-  matchWin: {
-    borderColor: 'rgba(74, 222, 128, 0.25)',
-    backgroundColor: 'rgba(74, 222, 128, 0.04)',
-  },
-  matchLose: {
-    borderColor: 'rgba(248, 113, 113, 0.25)',
-    backgroundColor: 'rgba(248, 113, 113, 0.04)',
-  },
-  matchTie: {
-    borderColor: 'rgba(251, 191, 36, 0.25)',
-    backgroundColor: 'rgba(251, 191, 36, 0.04)',
-  },
-  matchLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    gap: 10,
-  },
+  matchWin: { borderColor: 'rgba(74, 222, 128, 0.25)', backgroundColor: 'rgba(74, 222, 128, 0.04)' },
+  matchLose: { borderColor: 'rgba(248, 113, 113, 0.25)', backgroundColor: 'rgba(248, 113, 113, 0.04)' },
+  matchTie: { borderColor: 'rgba(251, 191, 36, 0.25)', backgroundColor: 'rgba(251, 191, 36, 0.04)' },
+  matchLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: 10 },
   matchEmoji: { fontSize: 22 },
   matchInfo: { flex: 1 },
-  matchOpponent: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  matchMeta: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    marginTop: 2,
-  },
-  matchRight: { alignItems: 'flex-end' },
-  matchScore: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#ffffff',
-  },
+  matchOpponent: { fontSize: 13, fontWeight: '700', color: '#ffffff' },
+  matchMeta: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
+  matchScore: { fontSize: 15, fontWeight: '800', color: '#ffffff' },
   matchScoreWin: { color: '#4ade80' },
   matchScoreLose: { color: '#f87171' },
   matchScoreTie: { color: '#fbbf24' },

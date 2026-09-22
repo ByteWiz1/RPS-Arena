@@ -4,9 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  ScrollView,
-  Platform,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
@@ -18,19 +15,17 @@ import {
   Dices,
   Shield,
   Save,
-  Zap,
-  TrendingUp,
 } from 'lucide-react-native';
 import { useGameStore } from '../store/gameStore';
 import { useAvatarStore } from '../store/avatarStore';
-import {
-  AIDifficulty,
-  AIPersonality,
-} from '../engine/AIEngine';
+import { AIDifficulty, AIPersonality } from '../engine/AIEngine';
 import {
   PERSONALITY_PRESETS,
   getPersonalityDescription,
 } from '../engine/AvatarEngine';
+import ScreenContainer from '../components/ScreenContainer';
+import ScreenScroll from '../components/ScreenScroll';
+import { showAlert } from '../utils/alert';
 
 const DIFFICULTIES: { id: AIDifficulty; name: string; emoji: string; desc: string; color: string }[] = [
   { id: 'easy', name: 'Easy', emoji: '😊', desc: 'Random plays', color: '#4ade80' },
@@ -80,19 +75,16 @@ export default function AISettingsScreen() {
     setAIDifficulty(difficulty);
     setAIPersonality(personality);
 
-    if (avatar) {
-      updateAvatarPersonality(avatar.id, personality);
-    }
+    if (avatar) updateAvatarPersonality(avatar.id, personality);
 
     setHasChanges(false);
-    Alert.alert('Saved', 'AI settings updated');
+    showAlert('Saved', 'AI settings updated');
     navigation.goBack();
   };
 
   return (
-    <View style={styles.container}>
+    <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-        {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
             <ChevronLeft size={24} color="#e94560" />
@@ -104,12 +96,7 @@ export default function AISettingsScreen() {
           <View style={styles.headerBtn} />
         </View>
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Difficulty Section */}
+        <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
           <Text style={styles.sectionTitle}>DIFFICULTY</Text>
           <View style={styles.difficultyGrid}>
             {DIFFICULTIES.map((d) => {
@@ -119,10 +106,7 @@ export default function AISettingsScreen() {
                   key={d.id}
                   style={[
                     styles.diffCard,
-                    isActive && {
-                      borderColor: d.color,
-                      backgroundColor: d.color + '15',
-                    },
+                    isActive && { borderColor: d.color, backgroundColor: d.color + '15' },
                   ]}
                   onPress={() => handleDifficultyChange(d.id)}
                 >
@@ -136,7 +120,6 @@ export default function AISettingsScreen() {
             })}
           </View>
 
-          {/* Personality Section */}
           <Text style={styles.sectionTitle}>PERSONALITY</Text>
 
           <View style={styles.sliderCard}>
@@ -215,15 +198,11 @@ export default function AISettingsScreen() {
             <Text style={styles.sliderHint}>Protects winning streaks</Text>
           </View>
 
-          {/* Live Preview */}
           <Text style={styles.sectionTitle}>LIVE PREVIEW</Text>
           <View style={styles.previewCard}>
-            <Text style={styles.previewText}>
-              {getPersonalityDescription(personality)}
-            </Text>
+            <Text style={styles.previewText}>{getPersonalityDescription(personality)}</Text>
           </View>
 
-          {/* Presets */}
           <Text style={styles.sectionTitle}>QUICK PRESETS</Text>
           <View style={styles.presetsRow}>
             {Object.keys(PERSONALITY_PRESETS).map((presetName) => (
@@ -249,24 +228,14 @@ export default function AISettingsScreen() {
               {hasChanges ? 'Apply Settings' : 'No Changes'}
             </Text>
           </TouchableOpacity>
-
-          <View style={{ height: 40 }} />
-        </ScrollView>
+        </ScreenScroll>
       </SafeAreaView>
-    </View>
+    </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0f',
-    ...(Platform.OS === 'web' ? { height: '100vh' as any } : {}),
-  },
-  safeArea: {
-    flex: 1,
-    ...(Platform.OS === 'web' ? { height: '100%' as any } : {}),
-  },
+  safeArea: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -276,19 +245,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  headerBtn: {
-    padding: 6,
-    width: 36,
-  },
-  headerCenter: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
+  headerBtn: { padding: 6, width: 36 },
+  headerCenter: { alignItems: 'center', flex: 1 },
+  title: { fontSize: 18, fontWeight: '700', color: '#ffffff' },
   subtitle: {
     fontSize: 10,
     color: '#8a8a9a',
@@ -296,13 +255,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
   },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
+  scrollContent: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 60 },
   sectionTitle: {
     fontSize: 11,
     fontWeight: '700',
@@ -312,11 +265,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     marginBottom: 8,
   },
-  difficultyGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
+  difficultyGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   diffCard: {
     flex: 1,
     minWidth: '45%',
@@ -327,21 +276,9 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
     alignItems: 'center',
   },
-  diffEmoji: {
-    fontSize: 26,
-    marginBottom: 4,
-  },
-  diffName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  diffDesc: {
-    fontSize: 10,
-    color: '#8a8a9a',
-    marginTop: 2,
-    textAlign: 'center',
-  },
+  diffEmoji: { fontSize: 26, marginBottom: 4 },
+  diffName: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+  diffDesc: { fontSize: 10, color: '#8a8a9a', marginTop: 2, textAlign: 'center' },
   sliderCard: {
     backgroundColor: 'rgba(255,255,255,0.03)',
     borderRadius: 12,
@@ -350,32 +287,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.04)',
   },
-  sliderHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  sliderLabel: {
-    flex: 1,
-    fontSize: 14,
-    color: '#ffffff',
-    fontWeight: '600',
-  },
-  sliderValue: {
-    fontSize: 13,
-    color: '#8a8a9a',
-    fontWeight: '700',
-  },
-  slider: {
-    width: '100%',
-    height: 32,
-  },
-  sliderHint: {
-    fontSize: 10,
-    color: '#3a3a4a',
-    marginTop: 0,
-  },
+  sliderHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  sliderLabel: { flex: 1, fontSize: 14, color: '#ffffff', fontWeight: '600' },
+  sliderValue: { fontSize: 13, color: '#8a8a9a', fontWeight: '700' },
+  slider: { width: '100%', height: 32 },
+  sliderHint: { fontSize: 10, color: '#3a3a4a', marginTop: 0 },
   previewCard: {
     backgroundColor: 'rgba(167, 139, 250, 0.08)',
     borderRadius: 12,
@@ -383,17 +299,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(167, 139, 250, 0.2)',
   },
-  previewText: {
-    fontSize: 13,
-    color: '#ffffff',
-    lineHeight: 18,
-    fontStyle: 'italic',
-  },
-  presetsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
+  previewText: { fontSize: 13, color: '#ffffff', lineHeight: 18, fontStyle: 'italic' },
+  presetsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   presetBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -402,11 +309,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
-  presetText: {
-    fontSize: 11,
-    color: '#8a8a9a',
-    fontWeight: '600',
-  },
+  presetText: { fontSize: 11, color: '#8a8a9a', fontWeight: '600' },
   saveBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -417,12 +320,6 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     marginTop: 20,
   },
-  saveBtnDisabled: {
-    backgroundColor: 'rgba(74, 222, 128, 0.15)',
-  },
-  saveBtnText: {
-    color: '#ffffff',
-    fontSize: 15,
-    fontWeight: '700',
-  },
+  saveBtnDisabled: { backgroundColor: 'rgba(74, 222, 128, 0.15)' },
+  saveBtnText: { color: '#ffffff', fontSize: 15, fontWeight: '700' },
 });

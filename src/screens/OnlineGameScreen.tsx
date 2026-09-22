@@ -5,19 +5,16 @@ import {
   TouchableOpacity,
   StyleSheet,
   Vibration,
-  Alert,
-  ScrollView,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
   Animated,
   Dimensions,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
-import { ChevronLeft, LogOut, Send, MessageCircle, X } from 'lucide-react-native';
+import { ChevronLeft, LogOut } from 'lucide-react-native';
 import { getSocket, disconnectFromServer } from '../services/multiplayer';
 import { useSettingsStore } from '../store/settingsStore';
+import { useAvatarStore } from '../store/avatarStore';
+import { useBattleStore } from '../store/battleStore';
 import { ALL_MOVES, MOVE_ICONS, MOVE_NAMES, Move } from '../engine/GameEngine';
 import {
   startGameMusic,
@@ -26,8 +23,10 @@ import {
   playCelebrationSequence,
   stopCelebration,
 } from '../services/audio';
-import { useAvatarStore } from '../store/avatarStore';
-
+import ScreenContainer from '../components/ScreenContainer';
+import ScreenScroll from '../components/ScreenScroll';
+import ChatBubble from '../components/ChatBubble';
+import { showAlert } from '../utils/alert';
 
 interface ChatMessage {
   playerId: string;
@@ -50,14 +49,23 @@ const WIN_TARGET = 30;
 export default function OnlineGameScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
-  const insets = useSafeAreaInsets();
-  const { roomCode, playerId, playerName } = route.params;
+
+  // Route params — everything EXCEPT battleMode
+  const params = route.params || {};
+  const roomCode = params.roomCode || '';
+  const playerId = params.playerId || '';
+  const playerName = params.playerName || 'Player';
+  const initialOpponent = params.opponentName || 'Opponent';
+
+  // battleMode comes from the global store
+  const battleMode = useBattleStore((s) => s.mode);
+  const isAvatarMode = battleMode === 'avatar';
+
+  console.log('[GAME] battleMode from store:', battleMode, 'isAvatar:', isAvatarMode);
+  console.log('[GAME] route params:', { roomCode, playerId, playerName, initialOpponent });
+
   const { vibrationEnabled } = useSettingsStore();
-  const {
-  getSelectedAvatar,
-  updateAvatarAfterMatch,
-  recordMatch,
-} = useAvatarStore();
+  const { getSelectedAvatar, updateAvatarAfterMatch, recordMatch } = useAvatarStore();
 
   const [myMove, setMyMove] = useState<Move | null>(null);
   const [opponentMove, setOpponentMove] = useState<Move | null>(null);
@@ -67,17 +75,14 @@ export default function OnlineGameScreen() {
   const [opponentTies, setOpponentTies] = useState(0);
   const [round, setRound] = useState(0);
   const [winner, setWinner] = useState<'win' | 'lose' | 'tie' | null>(null);
-  const [opponentName, setOpponentName] = useState('Opponent');
+  const [opponentName, setOpponentName] = useState(initialOpponent || 'Opponent');
   const [waiting, setWaiting] = useState(true);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [chatOpen, setChatOpen] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
   const [disconnected, setDisconnected] = useState(false);
   const [disconnectCountdown, setDisconnectCountdown] = useState(0);
   const [matchOver, setMatchOver] = useState(false);
   const [iWonMatch, setIWonMatch] = useState(false);
-  const scrollViewRef = useRef<ScrollView>(null);
   const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const EMOJI_LIST = ['👍', '😂', '🔥', '😎', '🤝', '😤', '💀', '🎉'];
@@ -121,7 +126,7 @@ export default function OnlineGameScreen() {
   useEffect(() => {
     const socket = getSocket();
     if (!socket) {
-      Alert.alert('Error', 'Not connected to server');
+      showAlert('Error', 'Not connected to server');
       navigation.goBack();
       return;
     }
@@ -133,27 +138,23 @@ export default function OnlineGameScreen() {
     });
 
     socket.on('roomState', (data: any) => {
-  setWaiting(false);
-  const opponent = data.players.find((p: any) => p.id !== playerId);
-  if (opponent) setOpponentName(opponent.name);
-
-  if (data.scores) {
-    setMyScore(data.scores[playerId] || 0);
-    const opponentId = Object.keys(data.scores).find((id) => id !== playerId);
-    setOpponentScore(opponentId ? data.scores[opponentId] : 0);
-  }
-  if (data.ties) {
-    setMyTies(data.ties[playerId] || 0);
-    const opponentId2 = Object.keys(data.ties).find((id) => id !== playerId);
-    setOpponentTies(opponentId2 ? data.ties[opponentId2] : 0);
-  }
-  if (typeof data.round === 'number') setRound(data.round);
-  if (data.matchOver !== undefined) setMatchOver(data.matchOver);
-});
-
-    socket.on('playerMoved', () => {
       setWaiting(false);
+      const opponent = data.players.find((p: any) => p.id !== playerId);
+      if (opponent) setOpponentName(opponent.name);
+      if (data.scores) {
+        setMyScore(data.scores[playerId] || 0);
+        const opponentId = Object.keys(data.scores).find((id) => id !== playerId);
+        setOpponentScore(opponentId ? data.scores[opponentId] : 0);
+      }
+      if (data.ties) {
+        setMyTies(data.ties[playerId] || 0);
+        const opponentId2 = Object.keys(data.ties).find((id) => id !== playerId);
+        setOpponentTies(opponentId2 ? data.ties[opponentId2] : 0);
+      }
+      if (typeof data.round === 'number') setRound(data.round);
     });
+
+    socket.on('playerMoved', () => setWaiting(false));
 
     socket.on('newMessage', (msg: ChatMessage) => {
       setMessages((prev) => [...prev, msg]);
@@ -161,9 +162,6 @@ export default function OnlineGameScreen() {
       if (emojiRegex.test(msg.text.trim())) {
         spawnFloatingEmoji(msg.text.trim(), msg.playerName);
       }
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
-      }, 100);
     });
 
     socket.on('roundResult', (data: any) => {
@@ -180,7 +178,9 @@ export default function OnlineGameScreen() {
         const iAmP1 = Object.keys(data.moves)[0] === playerId;
         const iWon = (result === 'p1' && iAmP1) || (result === 'p2' && !iAmP1);
         setWinner(iWon ? 'win' : 'lose');
-        if (vibrationEnabled) Vibration.vibrate(iWon ? [0, 200, 100, 200] : [0, 300]);
+        if (vibrationEnabled && !isAvatarMode) {
+          Vibration.vibrate(iWon ? [0, 200, 100, 200] : [0, 300]);
+        }
       } else {
         setWinner('tie');
       }
@@ -193,15 +193,13 @@ export default function OnlineGameScreen() {
       setRound(data.round);
 
       if (data.matchOver && data.matchWinner) {
-        setTimeout(() => {
-          triggerMatchEnd(data.matchWinner === playerId);
-        }, 1200);
+        setTimeout(() => triggerMatchEnd(data.matchWinner === playerId), 1200);
       } else {
         setTimeout(() => {
           setMyMove(null);
           setOpponentMove(null);
           setWinner(null);
-        }, 2000);
+        }, isAvatarMode ? 1200 : 2000);
       }
     });
 
@@ -222,9 +220,7 @@ export default function OnlineGameScreen() {
     socket.on('opponentDisconnected', (data: any) => {
       setDisconnected(true);
       setDisconnectCountdown(Math.round(data.timeout / 1000));
-
       if (countdownRef.current) clearInterval(countdownRef.current);
-
       let remaining = Math.round(data.timeout / 1000);
       countdownRef.current = setInterval(() => {
         remaining -= 1;
@@ -240,14 +236,11 @@ export default function OnlineGameScreen() {
     socket.on('opponentTimedOut', (data: any) => {
       setDisconnected(false);
       if (countdownRef.current) clearInterval(countdownRef.current);
-
-      if (data.winnerId === playerId) {
-        triggerMatchEnd(true);
-      }
+      if (data.winnerId === playerId) triggerMatchEnd(true);
     });
 
     socket.on('playerLeft', () => {
-      Alert.alert('Opponent Left', 'Your opponent left the room', [
+      showAlert('Opponent Left', 'Your opponent left the room', [
         { text: 'OK', onPress: () => handleLeave() },
       ]);
     });
@@ -263,33 +256,33 @@ export default function OnlineGameScreen() {
       socket.off('opponentTimedOut');
       socket.off('playerLeft');
     };
-  }, [playerId]);
+  }, [playerId, isAvatarMode]);
 
   const triggerMatchEnd = async (iWon: boolean) => {
-  setMatchOver(true);
-  setIWonMatch(iWon);
-  stopMusic();
+    setMatchOver(true);
+    setIWonMatch(iWon);
+    stopMusic();
 
-  const avatar = getSelectedAvatar();
-  if (avatar) {
-    const result: 'win' | 'lose' | 'tie' = iWon ? 'win' : 'lose';
-    updateAvatarAfterMatch(avatar.id, result);
-    recordMatch({
-      avatarId: avatar.id,
-      mode: 'online',
-      opponentName: opponentName,
-      myScore: myScore,
-      opponentScore: opponentScore,
-      myTies: myTies,
-      opponentTies: opponentTies,
-      result,
-    });
-  }
-
-  await playCelebrationSequence(iWon);
-};
+    const avatar = getSelectedAvatar();
+    if (avatar) {
+      const result: 'win' | 'lose' = iWon ? 'win' : 'lose';
+      updateAvatarAfterMatch(avatar.id, result);
+      recordMatch({
+        avatarId: avatar.id,
+        mode: 'online',
+        opponentName,
+        myScore,
+        opponentScore,
+        myTies,
+        opponentTies,
+        result,
+      });
+    }
+    await playCelebrationSequence(iWon);
+  };
 
   const handleMove = (move: Move) => {
+    if (isAvatarMode) return;
     if (myMove || matchOver) return;
     const socket = getSocket();
     if (!socket) return;
@@ -299,18 +292,14 @@ export default function OnlineGameScreen() {
     socket.emit('makeMove', { move });
   };
 
-  const handleSendMessage = () => {
-    if (!inputText.trim()) return;
+  const handleSendMessage = (text: string) => {
     const socket = getSocket();
     if (!socket) return;
-
     const emojiRegex = /^\p{Emoji}+$/u;
-    if (emojiRegex.test(inputText.trim())) {
-      spawnFloatingEmoji(inputText.trim(), playerName);
+    if (emojiRegex.test(text.trim())) {
+      spawnFloatingEmoji(text.trim(), playerName);
     }
-
-    socket.emit('sendMessage', { text: inputText.trim() });
-    setInputText('');
+    socket.emit('sendMessage', { text: text.trim() });
   };
 
   const handleEmoji = (emoji: string) => {
@@ -344,10 +333,8 @@ export default function OnlineGameScreen() {
     return '';
   };
 
-  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 8 : 0);
-
   return (
-    <View style={styles.container}>
+    <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.floatingLayer} pointerEvents="none">
           {floatingEmojis.map((item) => {
@@ -386,7 +373,9 @@ export default function OnlineGameScreen() {
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>Room {roomCode}</Text>
-            <Text style={styles.headerSubtitle}>First to {WIN_TARGET} wins</Text>
+            <Text style={styles.headerSubtitle}>
+              {isAvatarMode ? '🤖 Avatar Arena' : `First to ${WIN_TARGET} wins`}
+            </Text>
           </View>
           <TouchableOpacity onPress={handleLeave} style={styles.headerBtn}>
             <LogOut size={18} color="#8a8a9a" />
@@ -401,90 +390,108 @@ export default function OnlineGameScreen() {
           </View>
         )}
 
-        <View style={styles.scoreRow}>
-          <View style={styles.scoreItem}>
-            <Text style={styles.scoreName} numberOfLines={1}>{playerName}</Text>
-            <Text style={[styles.scoreValue, myScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
-              {myScore}
-            </Text>
-            <Text style={styles.scoreTies}>{myTies} ties</Text>
-          </View>
-          <View style={styles.scoreCenter}>
-            <Text style={styles.scoreVs}>⚡</Text>
-            <Text style={styles.scoreRound}>R{round}</Text>
-          </View>
-          <View style={styles.scoreItem}>
-            <Text style={styles.scoreName} numberOfLines={1}>{opponentName}</Text>
-            <Text style={[styles.scoreValue, opponentScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
-              {opponentScore}
-            </Text>
-            <Text style={styles.scoreTies}>{opponentTies} ties</Text>
-          </View>
-        </View>
-
-        <View style={styles.moveDisplay}>
-          <View style={styles.moveItem}>
-            <Text style={styles.moveLabel}>You</Text>
-            <View style={styles.moveCircle}>
-              <Text style={styles.moveIcon}>
-                {myMove ? MOVE_ICONS[myMove] : '❓'}
+        <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
+          <View style={styles.scoreRow}>
+            <View style={styles.scoreItem}>
+              <Text style={styles.scoreName} numberOfLines={1}>{playerName}</Text>
+              <Text style={[styles.scoreValue, myScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
+                {myScore}
               </Text>
+              <Text style={styles.scoreTies}>{myTies} ties</Text>
+            </View>
+            <View style={styles.scoreCenter}>
+              <Text style={styles.scoreVs}>⚡</Text>
+              <Text style={styles.scoreRound}>R{round}</Text>
+            </View>
+            <View style={styles.scoreItem}>
+              <Text style={styles.scoreName} numberOfLines={1}>{opponentName}</Text>
+              <Text style={[styles.scoreValue, opponentScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
+                {opponentScore}
+              </Text>
+              <Text style={styles.scoreTies}>{opponentTies} ties</Text>
             </View>
           </View>
-          <Text style={styles.moveVs}>⚡</Text>
-          <View style={styles.moveItem}>
-            <Text style={styles.moveLabel} numberOfLines={1}>{opponentName}</Text>
-            <View style={styles.moveCircle}>
-              <Text style={styles.moveIcon}>
-                {opponentMove ? MOVE_ICONS[opponentMove] : '❓'}
+
+          <View style={styles.moveDisplay}>
+            <View style={styles.moveItem}>
+              <Text style={styles.moveLabel}>
+                {isAvatarMode ? '🤖 AI' : 'You'}
               </Text>
+              <View style={styles.moveCircle}>
+                <Text style={styles.moveIcon}>{myMove ? MOVE_ICONS[myMove] : '❓'}</Text>
+              </View>
+            </View>
+            <Text style={styles.moveVs}>⚡</Text>
+            <View style={styles.moveItem}>
+              <Text style={styles.moveLabel} numberOfLines={1}>
+                {isAvatarMode ? '🤖 AI' : opponentName}
+              </Text>
+              <View style={styles.moveCircle}>
+                <Text style={styles.moveIcon}>{opponentMove ? MOVE_ICONS[opponentMove] : '❓'}</Text>
+              </View>
             </View>
           </View>
-        </View>
 
-        <View style={styles.resultArea}>
-          {winner && !matchOver && (
-            <Text
-              style={[
-                styles.resultText,
-                winner === 'win' ? styles.resultWin :
-                  winner === 'lose' ? styles.resultLose :
-                    styles.resultTie,
-              ]}
-            >
-              {getResultText()}
-            </Text>
+          <View style={styles.resultArea}>
+            {winner && !matchOver && (
+              <Text
+                style={[
+                  styles.resultText,
+                  winner === 'win' ? styles.resultWin :
+                    winner === 'lose' ? styles.resultLose : styles.resultTie,
+                ]}
+              >
+                {getResultText()}
+              </Text>
+            )}
+          </View>
+
+          {!matchOver && (
+            <View style={styles.buttonsArea}>
+              {isAvatarMode ? (
+                <View style={styles.avatarWatchBox}>
+                  <Text style={styles.avatarWatchText}>
+                    🤖 Both AIs are playing...
+                  </Text>
+                  <Text style={styles.avatarWatchSubtext}>
+                    Watch the battle unfold
+                  </Text>
+                </View>
+              ) : !myMove && !winner ? (
+                <View style={styles.moveButtons}>
+                  {ALL_MOVES.map((move) => (
+                    <TouchableOpacity
+                      key={move}
+                      style={styles.moveButton}
+                      onPress={() => handleMove(move)}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={styles.moveBtnIcon}>{MOVE_ICONS[move]}</Text>
+                      <Text style={styles.moveBtnName}>{MOVE_NAMES[move]}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : myMove && !winner ? (
+                <Text style={styles.waitingText}>⏳ Waiting for opponent...</Text>
+              ) : null}
+            </View>
           )}
-        </View>
+        </ScreenScroll>
 
         {!matchOver && (
-          <View style={styles.buttonsArea}>
-            {!myMove && !winner ? (
-              <View style={styles.moveButtons}>
-                {ALL_MOVES.map((move) => (
-                  <TouchableOpacity
-                    key={move}
-                    style={styles.moveButton}
-                    onPress={() => handleMove(move)}
-                    activeOpacity={0.6}
-                  >
-                    <Text style={styles.moveBtnIcon}>{MOVE_ICONS[move]}</Text>
-                    <Text style={styles.moveBtnName}>{MOVE_NAMES[move]}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : myMove && !winner ? (
-              <Text style={styles.waitingText}>⏳ Waiting for opponent...</Text>
-            ) : null}
-          </View>
+          <ChatBubble
+            messages={messages}
+            myPlayerId={playerId}
+            emojiList={EMOJI_LIST}
+            onSendMessage={handleSendMessage}
+            onSendEmoji={handleEmoji}
+          />
         )}
 
         {matchOver && (
           <View style={styles.matchOverOverlay}>
             <View style={styles.matchOverContent}>
-              <Text style={styles.matchOverEmoji}>
-                {iWonMatch ? '🏆' : '💀'}
-              </Text>
+              <Text style={styles.matchOverEmoji}>{iWonMatch ? '🏆' : '💀'}</Text>
               <Text
                 style={[
                   styles.matchOverTitle,
@@ -493,9 +500,7 @@ export default function OnlineGameScreen() {
               >
                 {iWonMatch ? 'YOU WIN!' : 'YOU LOSE'}
               </Text>
-              <Text style={styles.matchOverScore}>
-                {myScore} — {opponentScore}
-              </Text>
+              <Text style={styles.matchOverScore}>{myScore} — {opponentScore}</Text>
               <View style={styles.matchOverButtons}>
                 <TouchableOpacity style={styles.playAgainBtn} onPress={handlePlayAgain}>
                   <Text style={styles.playAgainBtnText}>Play Again</Text>
@@ -507,117 +512,15 @@ export default function OnlineGameScreen() {
             </View>
           </View>
         )}
-
-        {!matchOver && (
-          <View style={[styles.chatWrapper, { paddingBottom: bottomInset + 8 }]}>
-            {chatOpen && (
-              <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-                keyboardVerticalOffset={0}
-              >
-                <View style={styles.chatPanel}>
-                  <View style={styles.chatHeader}>
-                    <Text style={styles.chatHeaderText}>Chat</Text>
-                    <TouchableOpacity onPress={() => setChatOpen(false)} style={styles.chatCloseBtn}>
-                      <X size={16} color="#8a8a9a" />
-                    </TouchableOpacity>
-                  </View>
-                  <ScrollView
-                    ref={scrollViewRef}
-                    style={styles.chatMessages}
-                    contentContainerStyle={styles.chatMessagesContent}
-                    onContentSizeChange={() =>
-                      scrollViewRef.current?.scrollToEnd({ animated: true })
-                    }
-                  >
-                    {messages.length === 0 ? (
-                      <Text style={styles.chatEmpty}>Say hi!</Text>
-                    ) : (
-                      messages.map((msg, i) => (
-                        <View
-                          key={i}
-                          style={[
-                            styles.chatBubble,
-                            msg.playerId === playerId
-                              ? styles.chatBubbleMine
-                              : styles.chatBubbleTheirs,
-                          ]}
-                        >
-                          <Text style={styles.chatBubbleName}>{msg.playerName}</Text>
-                          <Text style={styles.chatBubbleText}>{msg.text}</Text>
-                        </View>
-                      ))
-                    )}
-                  </ScrollView>
-
-                  <View style={styles.emojiRow}>
-                    {EMOJI_LIST.map((emoji) => (
-                      <TouchableOpacity
-                        key={emoji}
-                        style={styles.emojiButton}
-                        onPress={() => handleEmoji(emoji)}
-                      >
-                        <Text style={styles.emojiText}>{emoji}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-
-                  <View style={styles.chatInputRow}>
-                    <TextInput
-                      style={styles.chatInput}
-                      placeholder="Message..."
-                      placeholderTextColor="#5a5a7a"
-                      value={inputText}
-                      onChangeText={setInputText}
-                      onSubmitEditing={handleSendMessage}
-                      maxLength={100}
-                    />
-                    <TouchableOpacity style={styles.sendButton} onPress={handleSendMessage}>
-                      <Send size={14} color="#ffffff" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </KeyboardAvoidingView>
-            )}
-
-            <TouchableOpacity
-              style={styles.chatToggle}
-              onPress={() => setChatOpen(!chatOpen)}
-            >
-              <MessageCircle size={16} color="#8a8a9a" />
-              <Text style={styles.chatToggleText}>
-                {chatOpen ? 'Close' : 'Chat'}
-              </Text>
-              {messages.length > 0 && !chatOpen && (
-                <View style={styles.chatBadge}>
-                  <Text style={styles.chatBadgeText}>{messages.length}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
       </SafeAreaView>
-    </View>
+    </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0f',
-    ...(Platform.OS === 'web' ? { height: '100vh' as any } : {}),
-  },
   safeArea: { flex: 1 },
-  floatingLayer: {
-    position: 'absolute',
-    top: 0, left: 0, right: 0, bottom: 0,
-    zIndex: 999,
-  },
-  floatingEmoji: {
-    position: 'absolute',
-    bottom: 120,
-    alignItems: 'center',
-  },
+  floatingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 500 },
+  floatingEmoji: { position: 'absolute', bottom: 120, alignItems: 'center' },
   floatingEmojiText: { fontSize: 48 },
   floatingEmojiName: {
     fontSize: 10,
@@ -654,6 +557,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   disconnectText: { fontSize: 12, color: '#fbbf24', fontWeight: '700' },
+  scrollContent: { paddingBottom: 100 },
   scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -697,25 +601,13 @@ const styles = StyleSheet.create({
   },
   moveIcon: { fontSize: 28 },
   moveVs: { fontSize: 18, color: '#5a5a7a', marginHorizontal: 6 },
-  resultArea: {
-    alignItems: 'center',
-    paddingVertical: 6,
-    minHeight: 34,
-  },
+  resultArea: { alignItems: 'center', paddingVertical: 6, minHeight: 34 },
   resultText: { fontSize: 20, fontWeight: '800' },
   resultWin: { color: '#4ade80' },
   resultLose: { color: '#f87171' },
   resultTie: { color: '#fbbf24' },
-  buttonsArea: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  moveButtons: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 12,
-  },
+  buttonsArea: { justifyContent: 'center', paddingHorizontal: 12, paddingBottom: 12, paddingTop: 12 },
+  moveButtons: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
   moveButton: {
     alignItems: 'center',
     paddingVertical: 10,
@@ -729,6 +621,22 @@ const styles = StyleSheet.create({
   moveBtnIcon: { fontSize: 28, marginBottom: 2 },
   moveBtnName: { fontSize: 10, color: '#5a5a7a', fontWeight: '600', textTransform: 'uppercase' },
   waitingText: { fontSize: 13, color: '#5a5a7a', textAlign: 'center' },
+  avatarWatchBox: {
+    alignItems: 'center',
+    paddingVertical: 24,
+    gap: 6,
+  },
+  avatarWatchText: {
+    fontSize: 16,
+    color: '#a78bfa',
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  avatarWatchSubtext: {
+    fontSize: 11,
+    color: '#5a5a7a',
+    fontWeight: '600',
+  },
   matchOverOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(10, 10, 15, 0.92)',
@@ -736,116 +644,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     zIndex: 1000,
   },
-  matchOverContent: {
-    alignItems: 'center',
-    paddingHorizontal: 32,
-    gap: 10,
-  },
+  matchOverContent: { alignItems: 'center', paddingHorizontal: 32, gap: 10 },
   matchOverEmoji: { fontSize: 72 },
   matchOverTitle: { fontSize: 42, fontWeight: '900', letterSpacing: 2 },
   matchOverWin: { color: '#4ade80' },
   matchOverLose: { color: '#f87171' },
   matchOverScore: { fontSize: 20, color: '#8a8a9a', fontWeight: '700', marginTop: 4 },
   matchOverButtons: { flexDirection: 'row', gap: 12, marginTop: 24 },
-  playAgainBtn: {
-    backgroundColor: '#e94560',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-  },
+  playAgainBtn: { backgroundColor: '#e94560', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12 },
   playAgainBtnText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
-  exitBtn: {
-    backgroundColor: 'rgba(255,255,255,0.06)',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-  },
+  exitBtn: { backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12 },
   exitBtnText: { color: '#8a8a9a', fontSize: 14, fontWeight: '700' },
-  chatWrapper: { paddingHorizontal: 12 },
-  chatPanel: {
-    backgroundColor: 'rgba(20, 20, 30, 0.95)',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-    marginBottom: 6,
-    overflow: 'hidden',
-  },
-  chatHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.05)',
-  },
-  chatHeaderText: { fontSize: 12, fontWeight: '700', color: '#ffffff' },
-  chatCloseBtn: { padding: 3 },
-  chatMessages: { maxHeight: 100, paddingHorizontal: 10 },
-  chatMessagesContent: { paddingVertical: 4 },
-  chatEmpty: { fontSize: 10, color: '#5a5a7a', textAlign: 'center', paddingVertical: 8 },
-  chatBubble: {
-    padding: 5,
-    borderRadius: 8,
-    marginBottom: 3,
-    maxWidth: '85%',
-  },
-  chatBubbleMine: { backgroundColor: 'rgba(233, 69, 96, 0.2)', alignSelf: 'flex-end' },
-  chatBubbleTheirs: { backgroundColor: 'rgba(255,255,255,0.06)', alignSelf: 'flex-start' },
-  chatBubbleName: { fontSize: 9, color: '#8a8a9a', marginBottom: 1, fontWeight: '700' },
-  chatBubbleText: { fontSize: 12, color: '#ffffff' },
-  emojiRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    paddingVertical: 4,
-    gap: 3,
-    flexWrap: 'wrap',
-    paddingHorizontal: 4,
-  },
-  emojiButton: { padding: 4, borderRadius: 6, backgroundColor: 'rgba(255,255,255,0.04)' },
-  emojiText: { fontSize: 16 },
-  chatInputRow: {
-    flexDirection: 'row',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    gap: 6,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.05)',
-  },
-  chatInput: {
-    flex: 1,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    color: '#ffffff',
-    fontSize: 13,
-  },
-  sendButton: {
-    backgroundColor: '#e94560',
-    borderRadius: 10,
-    width: 36,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chatToggle: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 8,
-    gap: 6,
-    backgroundColor: 'rgba(255,255,255,0.04)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
-  },
-  chatToggleText: { fontSize: 12, color: '#8a8a9a', fontWeight: '600' },
-  chatBadge: {
-    backgroundColor: '#e94560',
-    borderRadius: 8,
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    marginLeft: 4,
-  },
-  chatBadgeText: { color: '#ffffff', fontSize: 9, fontWeight: '700' },
 });

@@ -37,6 +37,10 @@ interface AvatarActions {
   deleteAvatar: (id: string) => void;
   getSelectedAvatar: () => Avatar | null;
   updateAvatarPersonality: (id: string, personality: AvatarPersonality) => void;
+  updateAvatarImage: (
+    id: string,
+    image: { type: 'emoji' | 'custom'; value: string }
+  ) => void;
   addTitle: (id: string, title: string) => void;
   addDefeatedMaster: (id: string, masterId: string) => void;
   addXPReward: (id: string, xp: number, rating?: number) => void;
@@ -65,6 +69,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>((set, get) => 
           winStreak: a.winStreak || 0,
           bestStreak: a.bestStreak || 0,
           emoji: a.emoji || '🤖',
+          image: a.image || { type: 'emoji', value: a.emoji || '🤖' },
           createdAt: a.createdAt ? new Date(a.createdAt) : new Date(),
         }));
         set({
@@ -84,7 +89,10 @@ export const useAvatarStore = create<AvatarState & AvatarActions>((set, get) => 
 
   createNewAvatar: (name, emoji) => {
     const avatar = createAvatar(name);
-    if (emoji) avatar.emoji = emoji;
+    if (emoji) {
+      avatar.emoji = emoji;
+      avatar.image = { type: 'emoji', value: emoji };
+    }
     set((state) => {
       const newState = {
         avatars: [...state.avatars, avatar],
@@ -117,6 +125,22 @@ export const useAvatarStore = create<AvatarState & AvatarActions>((set, get) => 
     set((state) => {
       const avatars = state.avatars.map((a) =>
         a.id === id ? { ...a, personality } : a
+      );
+      saveAll(avatars, state.selectedAvatarId, state.matchHistory);
+      return { avatars };
+    });
+  },
+
+  updateAvatarImage: (id, image) => {
+    set((state) => {
+      const avatars = state.avatars.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              image,
+              emoji: image.type === 'emoji' ? image.value : '📷',
+            }
+          : a
       );
       saveAll(avatars, state.selectedAvatarId, state.matchHistory);
       return { avatars };

@@ -5,7 +5,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   Vibration,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -15,6 +14,8 @@ import { useAvatarStore } from '../store/avatarStore';
 import { ALL_MOVES, MOVE_ICONS, MOVE_NAMES, Move } from '../engine/GameEngine';
 import { ChevronLeft, RotateCcw } from 'lucide-react-native';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
+import ScreenContainer from '../components/ScreenContainer';
+import ScreenScroll from '../components/ScreenScroll';
 
 export default function GameScreen() {
   const navigation = useNavigation<any>();
@@ -25,7 +26,6 @@ export default function GameScreen() {
   const { vibrationEnabled } = useSettingsStore();
   const { getSelectedAvatar, updateAvatarAfterMatch, recordMatch } = useAvatarStore();
 
-
   const {
     player1Move,
     player2Move,
@@ -34,7 +34,6 @@ export default function GameScreen() {
     player1Ties,
     player2Ties,
     round,
-    history,
     isPlaying,
     winner,
     setMode,
@@ -68,31 +67,30 @@ export default function GameScreen() {
   }, [mode, difficultyFromRoute]);
 
   useEffect(() => {
-  if (winner) {
-    if (winner === 'win') playSound('success');
-    else if (winner === 'lose') playSound('fail');
-    else playSound('tie');
+    if (winner) {
+      if (winner === 'win') playSound('success');
+      else if (winner === 'lose') playSound('fail');
+      else playSound('tie');
 
-    const avatar = getSelectedAvatar();
-    if (avatar && mode === 'pvc') {
-      updateAvatarAfterMatch(avatar.id, winner);
-      recordMatch({
-        avatarId: avatar.id,
-        mode: 'pvc',
-        opponentName: 'AI Opponent',
-        myScore: player1Score,
-        opponentScore: player2Score,
-        myTies: player1Ties,
-        opponentTies: player2Ties,
-        result: winner,
-      });
+      const avatar = getSelectedAvatar();
+      if (avatar && mode === 'pvc') {
+        updateAvatarAfterMatch(avatar.id, winner);
+        recordMatch({
+          avatarId: avatar.id,
+          mode: 'pvc',
+          opponentName: 'AI Opponent',
+          myScore: player1Score,
+          opponentScore: player2Score,
+          myTies: player1Ties,
+          opponentTies: player2Ties,
+          result: winner,
+        });
+      }
     }
-  }
-}, [winner]);
+  }, [winner]);
 
   const handlePlayerMove = (player: 1 | 2, move: Move) => {
     if (isPlaying) return;
-
     playSound('click');
     if (vibrationEnabled) Vibration.vibrate(10);
 
@@ -117,7 +115,6 @@ export default function GameScreen() {
   const renderMoveButton = (move: Move, player: 1 | 2) => {
     const isSelected = player === 1 ? player1Move === move : player2Move === move;
     const isDisabled = isPlaying || (player === 1 ? player1Move !== null : player2Move !== null);
-
     return (
       <TouchableOpacity
         key={`${player}-${move}`}
@@ -137,7 +134,7 @@ export default function GameScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.header}>
           <TouchableOpacity onPress={() => navigation.goBack()} style={styles.headerBtn}>
@@ -148,13 +145,9 @@ export default function GameScreen() {
               {training ? '🥋 Sparring' : mode === 'pvp' ? 'Local Multiplayer' : 'Player vs AI'}
             </Text>
             {mode === 'pvc' && ai && !training && (
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {ai.getSummary()}
-              </Text>
+              <Text style={styles.headerSubtitle} numberOfLines={1}>{ai.getSummary()}</Text>
             )}
-            {training && (
-              <Text style={styles.headerSubtitle}>Fighting your tuned AI</Text>
-            )}
+            {training && <Text style={styles.headerSubtitle}>Fighting your tuned AI</Text>}
           </View>
           <View style={styles.headerRight}>
             {mode === 'pvc' && !training && (
@@ -171,109 +164,93 @@ export default function GameScreen() {
           </View>
         </View>
 
-        <View style={styles.scoreRow}>
-          <View style={styles.scoreItem}>
-            <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(1)}</Text>
-            <Text style={styles.scoreValue}>{player1Score}</Text>
-            <Text style={styles.scoreTies}>{player1Ties} ties</Text>
-          </View>
-          <View style={styles.scoreCenter}>
-            <Text style={styles.scoreVs}>⚡</Text>
-            <Text style={styles.scoreRound}>R{round}</Text>
-          </View>
-          <View style={styles.scoreItem}>
-            <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(2)}</Text>
-            <Text style={styles.scoreValue}>{player2Score}</Text>
-            <Text style={styles.scoreTies}>{player2Ties} ties</Text>
-          </View>
-        </View>
-
-        <View style={styles.moveDisplay}>
-          <View style={styles.moveItem}>
-            <Text style={styles.moveLabel}>{getPlayerName(1)}</Text>
-            <View style={styles.moveCircle}>
-              <Text style={styles.moveIcon}>
-                {player1Move ? MOVE_ICONS[player1Move] : '❓'}
-              </Text>
+        <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
+          <View style={styles.scoreRow}>
+            <View style={styles.scoreItem}>
+              <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(1)}</Text>
+              <Text style={styles.scoreValue}>{player1Score}</Text>
+              <Text style={styles.scoreTies}>{player1Ties} ties</Text>
+            </View>
+            <View style={styles.scoreCenter}>
+              <Text style={styles.scoreVs}>⚡</Text>
+              <Text style={styles.scoreRound}>R{round}</Text>
+            </View>
+            <View style={styles.scoreItem}>
+              <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(2)}</Text>
+              <Text style={styles.scoreValue}>{player2Score}</Text>
+              <Text style={styles.scoreTies}>{player2Ties} ties</Text>
             </View>
           </View>
-          <Text style={styles.moveVs}>⚡</Text>
-          <View style={styles.moveItem}>
-            <Text style={styles.moveLabel} numberOfLines={1}>{getPlayerName(2)}</Text>
-            <View style={styles.moveCircle}>
-              <Text style={styles.moveIcon}>
-                {player2Move ? MOVE_ICONS[player2Move] : '❓'}
-              </Text>
+
+          <View style={styles.moveDisplay}>
+            <View style={styles.moveItem}>
+              <Text style={styles.moveLabel}>{getPlayerName(1)}</Text>
+              <View style={styles.moveCircle}>
+                <Text style={styles.moveIcon}>{player1Move ? MOVE_ICONS[player1Move] : '❓'}</Text>
+              </View>
+            </View>
+            <Text style={styles.moveVs}>⚡</Text>
+            <View style={styles.moveItem}>
+              <Text style={styles.moveLabel} numberOfLines={1}>{getPlayerName(2)}</Text>
+              <View style={styles.moveCircle}>
+                <Text style={styles.moveIcon}>{player2Move ? MOVE_ICONS[player2Move] : '❓'}</Text>
+              </View>
             </View>
           </View>
-        </View>
 
-        <View style={styles.resultWrapper}>
-          {winner && (
-            <Text
-              style={[
+          <View style={styles.resultWrapper}>
+            {winner && (
+              <Text style={[
                 styles.resultText,
                 winner === 'win' ? styles.resultWin :
-                  winner === 'lose' ? styles.resultLose :
-                    styles.resultTie,
-              ]}
-            >
-              {getResultText()}
-            </Text>
-          )}
-        </View>
+                  winner === 'lose' ? styles.resultLose : styles.resultTie,
+              ]}>
+                {getResultText()}
+              </Text>
+            )}
+          </View>
 
-        <View style={styles.buttonsArea}>
-          {!isPlaying && !winner && (
-            <>
-              {mode === 'pvc' ? (
-                <View style={styles.moveButtons}>
-                  {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
-                </View>
-              ) : (
-                <View style={styles.pvpContainer}>
-                  <View style={styles.pvpSection}>
-                    <Text style={styles.pvpLabel}>Player 1</Text>
-                    <View style={styles.moveButtons}>
-                      {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+          <View style={styles.buttonsArea}>
+            {!isPlaying && !winner && (
+              <>
+                {mode === 'pvc' ? (
+                  <View style={styles.moveButtons}>
+                    {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+                  </View>
+                ) : (
+                  <View style={styles.pvpContainer}>
+                    <View style={styles.pvpSection}>
+                      <Text style={styles.pvpLabel}>Player 1</Text>
+                      <View style={styles.moveButtons}>
+                        {ALL_MOVES.map((move) => renderMoveButton(move, 1))}
+                      </View>
+                    </View>
+                    <View style={styles.pvpDivider} />
+                    <View style={styles.pvpSection}>
+                      <Text style={styles.pvpLabel}>Player 2</Text>
+                      <View style={styles.moveButtons}>
+                        {ALL_MOVES.map((move) => renderMoveButton(move, 2))}
+                      </View>
                     </View>
                   </View>
-                  <View style={styles.pvpDivider} />
-                  <View style={styles.pvpSection}>
-                    <Text style={styles.pvpLabel}>Player 2</Text>
-                    <View style={styles.moveButtons}>
-                      {ALL_MOVES.map((move) => renderMoveButton(move, 2))}
-                    </View>
-                  </View>
-                </View>
-              )}
-            </>
-          )}
-
-          {isPlaying && (
-            <Text style={styles.waitingText}>⏳ Thinking...</Text>
-          )}
-
-          {player1Move && player2Move && !isPlaying && winner && (
-            <TouchableOpacity style={styles.nextButton} onPress={clearMoves}>
-              <Text style={styles.nextButtonText}>Next Round →</Text>
-            </TouchableOpacity>
-          )}
-        </View>
+                )}
+              </>
+            )}
+            {isPlaying && <Text style={styles.waitingText}>⏳ Thinking...</Text>}
+            {player1Move && player2Move && !isPlaying && winner && (
+              <TouchableOpacity style={styles.nextButton} onPress={clearMoves}>
+                <Text style={styles.nextButtonText}>Next Round →</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScreenScroll>
       </SafeAreaView>
-    </View>
+    </ScreenContainer>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#0a0a0f',
-    ...(Platform.OS === 'web' ? { height: '100vh' as any } : {}),
-  },
-  safeArea: {
-    flex: 1,
-  },
+  safeArea: { flex: 1 },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -283,31 +260,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255,255,255,0.04)',
   },
-  headerBtn: {
-    padding: 6,
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  aiIconText: {
-    fontSize: 18,
-  },
-  headerCenter: {
-    alignItems: 'center',
-    flex: 1,
-    paddingHorizontal: 8,
-  },
-  headerTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  headerSubtitle: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    marginTop: 1,
-  },
+  headerBtn: { padding: 6 },
+  headerRight: { flexDirection: 'row', alignItems: 'center' },
+  aiIconText: { fontSize: 18 },
+  headerCenter: { alignItems: 'center', flex: 1, paddingHorizontal: 8 },
+  headerTitle: { fontSize: 15, fontWeight: '700', color: '#ffffff' },
+  headerSubtitle: { fontSize: 10, color: '#5a5a7a', marginTop: 1 },
+  scrollContent: { paddingBottom: 40 },
   scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -320,40 +279,13 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.04)',
   },
-  scoreItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  scoreName: {
-    fontSize: 11,
-    color: '#5a5a7a',
-    textTransform: 'uppercase',
-    fontWeight: '600',
-  },
-  scoreValue: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#ffffff',
-    marginTop: 2,
-  },
-  scoreTies: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    marginTop: 1,
-  },
-  scoreCenter: {
-    alignItems: 'center',
-    paddingHorizontal: 8,
-  },
-  scoreVs: {
-    fontSize: 16,
-    color: '#e94560',
-  },
-  scoreRound: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    marginTop: 2,
-  },
+  scoreItem: { alignItems: 'center', flex: 1 },
+  scoreName: { fontSize: 11, color: '#5a5a7a', textTransform: 'uppercase', fontWeight: '600' },
+  scoreValue: { fontSize: 28, fontWeight: '800', color: '#ffffff', marginTop: 2 },
+  scoreTies: { fontSize: 10, color: '#5a5a7a', marginTop: 1 },
+  scoreCenter: { alignItems: 'center', paddingHorizontal: 8 },
+  scoreVs: { fontSize: 16, color: '#e94560' },
+  scoreRound: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
   moveDisplay: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -367,58 +299,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.04)',
   },
-  moveItem: {
-    alignItems: 'center',
-    flex: 1,
-  },
-  moveLabel: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-    fontWeight: '600',
-  },
+  moveItem: { alignItems: 'center', flex: 1 },
+  moveLabel: { fontSize: 10, color: '#5a5a7a', textTransform: 'uppercase', marginBottom: 6, fontWeight: '600' },
   moveCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
+    width: 64, height: 64, borderRadius: 32,
     backgroundColor: 'rgba(255,255,255,0.05)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: 'rgba(255,255,255,0.08)',
   },
-  moveIcon: {
-    fontSize: 32,
-  },
-  moveVs: {
-    fontSize: 18,
-    color: '#5a5a7a',
-    marginHorizontal: 6,
-  },
-  resultWrapper: {
-    minHeight: 44,
-    justifyContent: 'center',
-  },
-  resultText: {
-    fontSize: 22,
-    fontWeight: '800',
-    textAlign: 'center',
-  },
+  moveIcon: { fontSize: 32 },
+  moveVs: { fontSize: 18, color: '#5a5a7a', marginHorizontal: 6 },
+  resultWrapper: { minHeight: 44, justifyContent: 'center' },
+  resultText: { fontSize: 22, fontWeight: '800', textAlign: 'center' },
   resultWin: { color: '#4ade80' },
   resultLose: { color: '#f87171' },
   resultTie: { color: '#fbbf24' },
-  buttonsArea: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-    paddingBottom: 12,
-  },
-  moveButtons: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 12,
-  },
+  buttonsArea: { justifyContent: 'center', paddingHorizontal: 12, paddingBottom: 12, paddingTop: 12 },
+  moveButtons: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
   moveButton: {
     alignItems: 'center',
     paddingVertical: 12,
@@ -429,47 +326,15 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'transparent',
   },
-  selectedMove: {
-    borderColor: '#e94560',
-    backgroundColor: 'rgba(233, 69, 96, 0.1)',
-  },
-  disabledMove: {
-    opacity: 0.3,
-  },
-  moveBtnIcon: {
-    fontSize: 32,
-    marginBottom: 2,
-  },
-  moveBtnName: {
-    fontSize: 11,
-    color: '#5a5a7a',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  pvpContainer: {
-    gap: 10,
-  },
-  pvpSection: {
-    gap: 6,
-  },
-  pvpLabel: {
-    fontSize: 10,
-    color: '#5a5a7a',
-    textAlign: 'center',
-    textTransform: 'uppercase',
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  pvpDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    marginVertical: 4,
-  },
-  waitingText: {
-    fontSize: 14,
-    color: '#5a5a7a',
-    textAlign: 'center',
-  },
+  selectedMove: { borderColor: '#e94560', backgroundColor: 'rgba(233, 69, 96, 0.1)' },
+  disabledMove: { opacity: 0.3 },
+  moveBtnIcon: { fontSize: 32, marginBottom: 2 },
+  moveBtnName: { fontSize: 11, color: '#5a5a7a', fontWeight: '600', textTransform: 'uppercase' },
+  pvpContainer: { gap: 10 },
+  pvpSection: { gap: 6 },
+  pvpLabel: { fontSize: 10, color: '#5a5a7a', textAlign: 'center', textTransform: 'uppercase', fontWeight: '700', letterSpacing: 1 },
+  pvpDivider: { height: 1, backgroundColor: 'rgba(255,255,255,0.05)', marginVertical: 4 },
+  waitingText: { fontSize: 14, color: '#5a5a7a', textAlign: 'center' },
   nextButton: {
     backgroundColor: '#e94560',
     paddingVertical: 12,
@@ -478,9 +343,5 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginTop: 8,
   },
-  nextButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
+  nextButtonText: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
 });

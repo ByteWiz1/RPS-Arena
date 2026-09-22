@@ -16,15 +16,15 @@ const MENU_TRACKS = [
 ];
 
 const GAME_TRACKS = [
-  require('../../assets/sounds/bgm1.wav'),
-  require('../../assets/sounds/bgm2.wav'),
-  require('../../assets/sounds/bgm3.wav'),
+  require('../../assets/sounds/bgm1.mp3'),
+  require('../../assets/sounds/bgm2.mp3'),
+  require('../../assets/sounds/bgm3.mp3'),
 ];
 
 const SFX = {
-  success: require('../../assets/sounds/success.wav'),
-  fail: require('../../assets/sounds/fail.wav'),
-  tie: require('../../assets/sounds/tie.wav'),
+  success: require('../../assets/sounds/success.mp3'),
+  fail: require('../../assets/sounds/fail.mp3'),
+  tie: require('../../assets/sounds/tie.mp3'),
   click: require('../../assets/sounds/click.mp3'),
   winApplause: require('../../assets/sounds/win_applause.mp3'),
   winCelebration: require('../../assets/sounds/win_celebration.mp3'),

@@ -1,28 +1,45 @@
 {
   "expo": {
-    "name": "RPS-Arena",
-    "slug": "RPS-Arena",
+    "name": "RPS Arena",
+    "slug": "rps-arena",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "ios": {
-      "supportsTablet": true
-    },
+    "userInterfaceStyle": "dark",
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#0a0a0f"
+        }
+      ]
+    ],
     "android": {
+      "package": "com.bytewiz17.RPSArena",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "predictiveBackGestureEnabled": false
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "backgroundColor": "#ffffff",
+        "backgroundImage": "./assets/adaptive-background.png",
+        "monochromeImage": "./assets/adaptive-monochrome.png"
+      }
+    },
+    "ios": {
+      "icon": {
+        "light": "./assets/icon-ios.png",
+        "dark": "./assets/icon-ios-dark.png",
+        "tinted": "./assets/icon-ios-tinted.png"
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
-    "plugins": [
-     
-    ]
+    "extra": {
+      "eas": {
+        "projectId": "04ab194c-5ef9-4ae4-afcd-d51334315f93"
+      }
+    }
   }
 }

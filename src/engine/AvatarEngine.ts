@@ -7,10 +7,18 @@ export interface AvatarPersonality {
   defense: number;
 }
 
+export type AvatarImageType = 'emoji' | 'custom';
+
+export interface AvatarImage {
+  type: AvatarImageType;
+  value: string;
+}
+
 export interface Avatar {
   id: string;
   name: string;
   emoji: string;
+  image: AvatarImage;
   ai: AdaptiveAI;
   xp: number;
   level: number;
@@ -96,6 +104,7 @@ export function createAvatar(name: string, difficulty: AIDifficulty = 'medium'):
     id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
     name: name || 'My Avatar',
     emoji: '🤖',
+    image: { type: 'emoji', value: '🤖' },
     ai: new AdaptiveAI(name || 'My Avatar', difficulty),
     xp: 0,
     level: 1,
