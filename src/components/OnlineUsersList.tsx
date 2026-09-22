@@ -4,21 +4,34 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Image,
+  ActivityIndicator,
 } from 'react-native';
-import { Circle, UserPlus } from 'lucide-react-native';
-import { useOnlineStore } from '../store/onlineStore';
-import { useUserStore } from '../store/userStore';
+import { UserPlus } from 'lucide-react-native';
+import { useOnlineStore, OnlineUser } from '../store/onlineStore';
 
 interface Props {
   onInvite: (targetSocketId: string, targetName: string) => void;
+  pendingInviteId?: string | null;
+  selfUserId?: string;
 }
 
-export default function OnlineUsersList({ onInvite }: Props) {
+export default function OnlineUsersList({
+  onInvite,
+  pendingInviteId,
+  selfUserId,
+}: Props) {
   const { users } = useOnlineStore();
-  const { identity } = useUserStore();
 
-  const others = users.filter((u) => u.userId !== identity?.userId);
+  // Dedupe by userId and filter self
+  const seen = new Set<string>();
+  const others: OnlineUser[] = [];
+  for (const u of users) {
+    if (!u.userId) continue;
+    if (selfUserId && u.userId === selfUserId) continue;
+    if (seen.has(u.userId)) continue;
+    seen.add(u.userId);
+    others.push(u);
+  }
 
   if (others.length === 0) {
     return (
@@ -35,6 +48,7 @@ export default function OnlineUsersList({ onInvite }: Props) {
     <View style={styles.list}>
       {others.map((user) => {
         const isAvailable = user.status === 'online';
+        const isPending = pendingInviteId === user.socketId;
         return (
           <View key={user.userId} style={styles.row}>
             <View style={styles.avatarWrap}>
@@ -70,26 +84,29 @@ export default function OnlineUsersList({ onInvite }: Props) {
             <TouchableOpacity
               style={[
                 styles.inviteBtn,
-                !isAvailable && styles.inviteBtnDisabled,
+                (!isAvailable || isPending) && styles.inviteBtnDisabled,
               ]}
-              onPress={() => {
-  console.log('[TAP INVITE]', user.name, user.socketId);
-  onInvite(user.socketId, user.name);
-}}
-              disabled={!isAvailable}
+              onPress={() => onInvite(user.socketId, user.name)}
+              disabled={!isAvailable || isPending}
             >
-              <UserPlus
-                size={14}
-                color={isAvailable ? '#000000' : '#5a5a7a'}
-              />
-              <Text
-                style={[
-                  styles.inviteBtnText,
-                  !isAvailable && styles.inviteBtnTextDisabled,
-                ]}
-              >
-                Invite
-              </Text>
+              {isPending ? (
+                <ActivityIndicator size="small" color="#000000" />
+              ) : (
+                <>
+                  <UserPlus
+                    size={14}
+                    color={isAvailable ? '#000000' : '#5a5a7a'}
+                  />
+                  <Text
+                    style={[
+                      styles.inviteBtnText,
+                      !isAvailable && styles.inviteBtnTextDisabled,
+                    ]}
+                  >
+                    Invite
+                  </Text>
+                </>
+              )}
             </TouchableOpacity>
           </View>
         );
@@ -99,9 +116,7 @@ export default function OnlineUsersList({ onInvite }: Props) {
 }
 
 const styles = StyleSheet.create({
-  list: {
-    gap: 8,
-  },
+  list: { gap: 8 },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -119,9 +134,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarEmoji: {
-    fontSize: 32,
-  },
+  avatarEmoji: { fontSize: 32 },
   statusDot: {
     position: 'absolute',
     bottom: 0,
@@ -132,49 +145,25 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: '#0a0a0f',
   },
-  info: {
-    flex: 1,
-  },
-  name: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  status: {
-    fontSize: 11,
-    color: '#8a8a9a',
-    marginTop: 2,
-  },
+  info: { flex: 1 },
+  name: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+  status: { fontSize: 11, color: '#8a8a9a', marginTop: 2 },
   inviteBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 4,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
     backgroundColor: '#4ade80',
+    minWidth: 76,
   },
-  inviteBtnDisabled: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
-  },
-  inviteBtnText: {
-    color: '#000000',
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  inviteBtnTextDisabled: {
-    color: '#5a5a7a',
-  },
-  emptyBox: {
-    alignItems: 'center',
-    paddingVertical: 40,
-    paddingHorizontal: 20,
-  },
-  emptyText: {
-    fontSize: 14,
-    color: '#8a8a9a',
-    fontWeight: '600',
-  },
+  inviteBtnDisabled: { backgroundColor: 'rgba(255,255,255,0.05)' },
+  inviteBtnText: { color: '#000000', fontSize: 11, fontWeight: '900' },
+  inviteBtnTextDisabled: { color: '#5a5a7a' },
+  emptyBox: { alignItems: 'center', paddingVertical: 40, paddingHorizontal: 20 },
+  emptyText: { fontSize: 14, color: '#8a8a9a', fontWeight: '600' },
   emptyHint: {
     fontSize: 11,
     color: '#5a5a7a',

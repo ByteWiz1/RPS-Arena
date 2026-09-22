@@ -42,32 +42,46 @@ export default function App() {
   }, [userLoaded, identity]);
 
   useEffect(() => {
-    if (!userLoaded || !identity) return;
+  if (!userLoaded || !identity) return;
 
-    const interval = setInterval(() => {
-      const socket = getSocket();
-      if (!socket) return;
+  const interval = setInterval(() => {
+    const socket = getSocket();
+    if (!socket) return;
 
-      const handleOnlineUsers = (data: any) => {
-        if (data.users) setUsers(data.users);
-      };
-      const handleOnlineCount = (data: any) => {
-        if (typeof data.count === 'number') setCount(data.count);
-      };
+    const handleOnlineUsers = (data: any) => {
+      if (data.users) setUsers(data.users);
+    };
+    const handleOnlineCount = (data: any) => {
+      if (typeof data.count === 'number') setCount(data.count);
+    };
 
-      socket.on('onlineUsers', handleOnlineUsers);
-      socket.on('onlineCount', handleOnlineCount);
+    socket.on('onlineUsers', handleOnlineUsers);
+    socket.on('onlineCount', handleOnlineCount);
 
-      if (socket.connected) {
-        socket.emit('getOnlineUsers');
-      }
+    // Immediate pull so we don't wait for the first broadcast
+    if (socket.connected) {
+      socket.emit('getOnlineUsers');
+      socket.emit('getOnlineCount');
+    }
 
-      clearInterval(interval);
-    }, 500);
+    // Also pull again on every reconnect
+    const handleConnect = () => {
+      socket.emit('getOnlineUsers');
+      socket.emit('getOnlineCount');
+    };
+    socket.on('connect', handleConnect);
 
-    return () => clearInterval(interval);
-  }, [userLoaded, identity]);
+    // Cleanup handlers when this effect ends
+    return () => {
+      socket.off('onlineUsers', handleOnlineUsers);
+      socket.off('onlineCount', handleOnlineCount);
+      socket.off('connect', handleConnect);
+    };
+  }, 500);
 
+  return () => clearInterval(interval);
+}, [userLoaded, identity]);
+  
   useEffect(() => {
     if (Platform.OS === 'web') {
       const doc = (globalThis as any).document;
