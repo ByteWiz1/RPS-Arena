@@ -18,7 +18,6 @@ import {
   Circle,
   Copy,
   Check,
-  Loader,
 } from 'lucide-react-native';
 import { connectToServer, getSocket } from '../services/multiplayer';
 import { startGameMusic, stopMusic } from '../services/audio';
@@ -39,7 +38,6 @@ export default function OnlineLobbyScreen() {
   const { users, count } = useOnlineStore();
   const { identity } = useUserStore();
 
-  // Prefilled, read-only username
   const playerName = identity?.username || 'Player';
   const playerUserId = identity?.userId || '';
 
@@ -58,6 +56,9 @@ export default function OnlineLobbyScreen() {
   const [inviteStatus, setInviteStatus] = useState<string>('');
   const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
 
+  // ─────────────────────────────────────────────
+  // Lifecycle
+  // ─────────────────────────────────────────────
   useEffect(() => {
     console.log('[LOBBY] battleMode from store:', battleMode);
     console.log('[LOBBY] identity:', playerName, playerUserId);
@@ -66,44 +67,59 @@ export default function OnlineLobbyScreen() {
   useEffect(() => {
     startGameMusic();
     setupListeners();
-    // Force refresh online list + count on mount
+
     const socket = getSocket();
     if (socket?.connected) {
       socket.emit('getOnlineUsers');
       socket.emit('getOnlineCount');
     }
+
     return () => {
       stopMusic();
       teardownListeners();
     };
   }, []);
 
+  // ─────────────────────────────────────────────
+  // Socket listeners
+  // ─────────────────────────────────────────────
   const setupListeners = () => {
     const socket = getSocket();
     if (!socket) {
-      // Socket not ready yet — retry shortly
       setTimeout(setupListeners, 500);
       return;
     }
 
-    socket.on('inviteDeclined', () => {
-      setInviteStatus('Player declined your invite');
+    socket.on('inviteSent', () => {
+      // The toast is already shown by handleSendInvite — nothing extra
+    });
+
+    socket.on('inviteDeclined', (data: any) => {
+      const who = data?.byName || 'Player';
+      setInviteStatus(`${who} declined your invite`);
       setPendingInviteId(null);
       setTimeout(() => setInviteStatus(''), 3000);
     });
+
     socket.on('inviteExpired', () => {
       setInviteStatus('Invite expired');
       setPendingInviteId(null);
       setTimeout(() => setInviteStatus(''), 3000);
     });
-    socket.on('inviteSent', () => {
+
+    socket.on('inviteAccepted', (data: any) => {
+      // App.tsx handles navigation via roomReady.
+      // We just clear the pending indicator.
       setPendingInviteId(null);
     });
+
     socket.on('searchResult', (data: any) => {
       setSearching(false);
       setSearchResult(data);
     });
+
     socket.on('recentOpponents', (data: any) => setRecentOpponents(data));
+
     socket.on('hostCode', (data: any) => {
       if (data.code) setHostCode(data.code);
     });
@@ -117,9 +133,10 @@ export default function OnlineLobbyScreen() {
   const teardownListeners = () => {
     const socket = getSocket();
     if (!socket) return;
+    socket.off('inviteSent');
     socket.off('inviteDeclined');
     socket.off('inviteExpired');
-    socket.off('inviteSent');
+    socket.off('inviteAccepted');
     socket.off('searchResult');
     socket.off('recentOpponents');
     socket.off('hostCode');
@@ -134,7 +151,9 @@ export default function OnlineLobbyScreen() {
     }
   };
 
-  // ─── HOST A MATCH ───
+  // ─────────────────────────────────────────────
+  // HOST — creates room, stays on host screen
+  // ─────────────────────────────────────────────
   const handleHost = async () => {
     setServerError('');
     setIsConnecting(true);
@@ -166,7 +185,9 @@ export default function OnlineLobbyScreen() {
     socket.emit('createRoom', { name: playerName, battleMode });
   };
 
-  // ─── JOIN A MATCH (wait for invite) ───
+  // ─────────────────────────────────────────────
+  // JOIN — waits for someone to invite, stays on join screen
+  // ─────────────────────────────────────────────
   const handleJoinAsPlayer = async () => {
     setServerError('');
     setIsConnecting(true);
@@ -187,7 +208,9 @@ export default function OnlineLobbyScreen() {
     }
   };
 
-  // ─── SEARCH PLAYER ───
+  // ─────────────────────────────────────────────
+  // Search
+  // ─────────────────────────────────────────────
   const handleSearchPlayer = () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
@@ -196,7 +219,9 @@ export default function OnlineLobbyScreen() {
     if (socket) socket.emit('searchPlayer', { username: searchQuery.trim() });
   };
 
-  // ─── INVITE ───
+  // ─────────────────────────────────────────────
+  // Send invite
+  // ─────────────────────────────────────────────
   const handleSendInvite = (targetId: string, targetName: string) => {
     const socket = getSocket();
     if (!socket) return;
@@ -206,7 +231,7 @@ export default function OnlineLobbyScreen() {
     setTimeout(() => {
       setInviteStatus('');
       setPendingInviteId(null);
-    }, 3000);
+    }, 5000);
   };
 
   const handleCopyCode = () => {
@@ -218,7 +243,9 @@ export default function OnlineLobbyScreen() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ─── CREATE ROOM WITH CUSTOM CODE ───
+  // ─────────────────────────────────────────────
+  // Create room with custom code
+  // ─────────────────────────────────────────────
   const handleCreateRoomWithCode = async () => {
     setCodeError(false);
     setServerError('');
@@ -240,12 +267,9 @@ export default function OnlineLobbyScreen() {
     }
     socket.once('roomCreated', (data: any) => {
       setIsConnecting(false);
-      navigation.navigate('OnlineGame', {
-        roomCode: data.code,
-        playerId: data.playerId,
-        playerName: data.playerName,
-        isHost: true,
-      });
+      setHostCode(data.code);
+      setMode('host');
+      // App.tsx navigates when roomReady fires (i.e. when a joiner arrives)
     });
     socket.once('error', (data: any) => {
       setIsConnecting(false);
@@ -258,7 +282,9 @@ export default function OnlineLobbyScreen() {
     });
   };
 
-  // ─── JOIN WITH CODE ───
+  // ─────────────────────────────────────────────
+  // Join with code
+  // ─────────────────────────────────────────────
   const handleJoinByCode = async () => {
     setCodeError(false);
     setServerError('');
@@ -278,15 +304,6 @@ export default function OnlineLobbyScreen() {
       setIsConnecting(false);
       return;
     }
-    socket.once('playerJoined', (data: any) => {
-      setIsConnecting(false);
-      navigation.navigate('OnlineGame', {
-        roomCode: joinCode.toUpperCase(),
-        playerId: data.playerId,
-        playerName: data.playerName,
-        isHost: false,
-      });
-    });
     socket.once('error', (data: any) => {
       setIsConnecting(false);
       setServerError(data.message);
@@ -295,8 +312,12 @@ export default function OnlineLobbyScreen() {
       code: joinCode.toUpperCase(),
       name: playerName,
     });
+    // App.tsx navigates when roomReady fires
   };
 
+  // ─────────────────────────────────────────────
+  // RENDER: MAIN
+  // ─────────────────────────────────────────────
   const renderMain = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.onlineBadge}>
@@ -390,6 +411,9 @@ export default function OnlineLobbyScreen() {
     </ScreenScroll>
   );
 
+  // ─────────────────────────────────────────────
+  // RENDER: HOST
+  // ─────────────────────────────────────────────
   const renderHost = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.hostHeader}>
@@ -415,8 +439,13 @@ export default function OnlineLobbyScreen() {
       </View>
 
       <Text style={styles.codeHint}>
-        Share this code or invite from the list below
+        Waiting for an opponent — the match starts as soon as someone joins
       </Text>
+
+      <View style={styles.waitingBox}>
+        <ActivityIndicator color="#e94560" size="small" />
+        <Text style={styles.waitingText}>Waiting for opponent...</Text>
+      </View>
 
       <View style={styles.divider}>
         <View style={styles.dividerLine} />
@@ -499,6 +528,9 @@ export default function OnlineLobbyScreen() {
     </ScreenScroll>
   );
 
+  // ─────────────────────────────────────────────
+  // RENDER: JOIN
+  // ─────────────────────────────────────────────
   const renderJoin = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.hostHeader}>
@@ -668,7 +700,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
-    inputError: {
+  inputError: {
     borderColor: '#f87171',
     backgroundColor: 'rgba(248, 113, 113, 0.08)',
   },

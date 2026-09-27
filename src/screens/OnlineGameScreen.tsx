@@ -26,6 +26,7 @@ import {
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
 import ChatBubble from '../components/ChatBubble';
+import RecentMovesTrail from '../components/RecentMovesTrail';
 import { showAlert } from '../utils/alert';
 
 interface ChatMessage {
@@ -50,18 +51,19 @@ export default function OnlineGameScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
 
-  // Route params — everything EXCEPT battleMode
+  // Route params — battleMode from params first, store as fallback
   const params = route.params || {};
   const roomCode = params.roomCode || '';
   const playerId = params.playerId || '';
   const playerName = params.playerName || 'Player';
   const initialOpponent = params.opponentName || 'Opponent';
-
-  // battleMode comes from the global store
-  const battleMode = useBattleStore((s) => s.mode);
+  const storeMode = useBattleStore((s) => s.mode);
+  const battleMode: 'human' | 'avatar' = params.battleMode === 'avatar' || params.battleMode === 'human'
+    ? params.battleMode
+    : storeMode;
   const isAvatarMode = battleMode === 'avatar';
 
-  console.log('[GAME] battleMode from store:', battleMode, 'isAvatar:', isAvatarMode);
+  console.log('[GAME] battleMode:', battleMode, 'isAvatar:', isAvatarMode);
   console.log('[GAME] route params:', { roomCode, playerId, playerName, initialOpponent });
 
   const { vibrationEnabled } = useSettingsStore();
@@ -83,6 +85,12 @@ export default function OnlineGameScreen() {
   const [disconnectCountdown, setDisconnectCountdown] = useState(0);
   const [matchOver, setMatchOver] = useState(false);
   const [iWonMatch, setIWonMatch] = useState(false);
+
+  // ─── Recent moves (newest first, max 5) ───
+  const [myRecentMoves, setMyRecentMoves] = useState<Move[]>([]);
+  const [opponentRecentMoves, setOpponentRecentMoves] = useState<Move[]>([]);
+  const opponentIdRef = useRef<string | null>(null);
+
   const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const EMOJI_LIST = ['👍', '😂', '🔥', '😎', '🤝', '😤', '💀', '🎉'];
@@ -123,6 +131,22 @@ export default function OnlineGameScreen() {
     });
   };
 
+  // Helper: apply recentMoves payload from server
+  const applyRecentMoves = (payload: any) => {
+    if (!payload) return;
+    const myList: Move[] = payload[playerId] || [];
+    const oppId =
+      opponentIdRef.current ||
+      Object.keys(payload).find((id) => id !== playerId) ||
+      null;
+    if (oppId) opponentIdRef.current = oppId;
+    const oppList: Move[] = oppId ? payload[oppId] || [] : [];
+
+    // Server sends oldest → newest; we store newest-first for the component
+    setMyRecentMoves([...myList].reverse());
+    setOpponentRecentMoves([...oppList].reverse());
+  };
+
   useEffect(() => {
     const socket = getSocket();
     if (!socket) {
@@ -140,7 +164,10 @@ export default function OnlineGameScreen() {
     socket.on('roomState', (data: any) => {
       setWaiting(false);
       const opponent = data.players.find((p: any) => p.id !== playerId);
-      if (opponent) setOpponentName(opponent.name);
+      if (opponent) {
+        setOpponentName(opponent.name);
+        opponentIdRef.current = opponent.id;
+      }
       if (data.scores) {
         setMyScore(data.scores[playerId] || 0);
         const opponentId = Object.keys(data.scores).find((id) => id !== playerId);
@@ -152,6 +179,19 @@ export default function OnlineGameScreen() {
         setOpponentTies(opponentId2 ? data.ties[opponentId2] : 0);
       }
       if (typeof data.round === 'number') setRound(data.round);
+      if (data.recentMoves) applyRecentMoves(data.recentMoves);
+    });
+
+    // roomReady: initial state
+    socket.on('roomReady', (data: any) => {
+      if (data.recentMoves) applyRecentMoves(data.recentMoves);
+      if (data.players) {
+        const opponent = data.players.find((p: any) => p.id !== playerId);
+        if (opponent) {
+          setOpponentName(opponent.name);
+          opponentIdRef.current = opponent.id;
+        }
+      }
     });
 
     socket.on('playerMoved', () => setWaiting(false));
@@ -166,9 +206,11 @@ export default function OnlineGameScreen() {
 
     socket.on('roundResult', (data: any) => {
       setWaiting(false);
+
       const myMoveValue = data.moves[playerId];
       const opponentId = Object.keys(data.moves).find((id) => id !== playerId);
       const opponentMoveValue = opponentId ? data.moves[opponentId] : null;
+      if (opponentId) opponentIdRef.current = opponentId;
 
       setMyMove(myMoveValue);
       setOpponentMove(opponentMoveValue);
@@ -191,6 +233,9 @@ export default function OnlineGameScreen() {
       setMyTies(data.ties?.[playerId] || 0);
       setOpponentTies(opponentId2 ? data.ties?.[opponentId2] || 0 : 0);
       setRound(data.round);
+
+      // Update recent moves
+      if (data.recentMoves) applyRecentMoves(data.recentMoves);
 
       if (data.matchOver && data.matchWinner) {
         setTimeout(() => triggerMatchEnd(data.matchWinner === playerId), 1200);
@@ -215,6 +260,12 @@ export default function OnlineGameScreen() {
       setMatchOver(false);
       setIWonMatch(false);
       stopCelebration();
+      if (data.recentMoves) {
+        applyRecentMoves(data.recentMoves);
+      } else {
+        setMyRecentMoves([]);
+        setOpponentRecentMoves([]);
+      }
     });
 
     socket.on('opponentDisconnected', (data: any) => {
@@ -248,6 +299,7 @@ export default function OnlineGameScreen() {
     return () => {
       socket.off('playerJoined');
       socket.off('roomState');
+      socket.off('roomReady');
       socket.off('playerMoved');
       socket.off('newMessage');
       socket.off('roundResult');
@@ -393,22 +445,38 @@ export default function OnlineGameScreen() {
         <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
           <View style={styles.scoreRow}>
             <View style={styles.scoreItem}>
-              <Text style={styles.scoreName} numberOfLines={1}>{playerName}</Text>
-              <Text style={[styles.scoreValue, myScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
+              <Text style={styles.scoreName} numberOfLines={1}>
+                {playerName}
+              </Text>
+              <Text
+                style={[
+                  styles.scoreValue,
+                  myScore >= WIN_TARGET - 5 && styles.scoreNearWin,
+                ]}
+              >
                 {myScore}
               </Text>
               <Text style={styles.scoreTies}>{myTies} ties</Text>
+              <RecentMovesTrail moves={myRecentMoves} slots={5} size={22} />
             </View>
             <View style={styles.scoreCenter}>
               <Text style={styles.scoreVs}>⚡</Text>
               <Text style={styles.scoreRound}>R{round}</Text>
             </View>
             <View style={styles.scoreItem}>
-              <Text style={styles.scoreName} numberOfLines={1}>{opponentName}</Text>
-              <Text style={[styles.scoreValue, opponentScore >= WIN_TARGET - 5 && styles.scoreNearWin]}>
+              <Text style={styles.scoreName} numberOfLines={1}>
+                {opponentName}
+              </Text>
+              <Text
+                style={[
+                  styles.scoreValue,
+                  opponentScore >= WIN_TARGET - 5 && styles.scoreNearWin,
+                ]}
+              >
                 {opponentScore}
               </Text>
               <Text style={styles.scoreTies}>{opponentTies} ties</Text>
+              <RecentMovesTrail moves={opponentRecentMoves} slots={5} size={22} />
             </View>
           </View>
 
@@ -418,7 +486,9 @@ export default function OnlineGameScreen() {
                 {isAvatarMode ? '🤖 AI' : 'You'}
               </Text>
               <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>{myMove ? MOVE_ICONS[myMove] : '❓'}</Text>
+                <Text style={styles.moveIcon}>
+                  {myMove ? MOVE_ICONS[myMove] : '❓'}
+                </Text>
               </View>
             </View>
             <Text style={styles.moveVs}>⚡</Text>
@@ -427,7 +497,9 @@ export default function OnlineGameScreen() {
                 {isAvatarMode ? '🤖 AI' : opponentName}
               </Text>
               <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>{opponentMove ? MOVE_ICONS[opponentMove] : '❓'}</Text>
+                <Text style={styles.moveIcon}>
+                  {opponentMove ? MOVE_ICONS[opponentMove] : '❓'}
+                </Text>
               </View>
             </View>
           </View>
@@ -437,8 +509,11 @@ export default function OnlineGameScreen() {
               <Text
                 style={[
                   styles.resultText,
-                  winner === 'win' ? styles.resultWin :
-                    winner === 'lose' ? styles.resultLose : styles.resultTie,
+                  winner === 'win'
+                    ? styles.resultWin
+                    : winner === 'lose'
+                    ? styles.resultLose
+                    : styles.resultTie,
                 ]}
               >
                 {getResultText()}
@@ -500,9 +575,14 @@ export default function OnlineGameScreen() {
               >
                 {iWonMatch ? 'YOU WIN!' : 'YOU LOSE'}
               </Text>
-              <Text style={styles.matchOverScore}>{myScore} — {opponentScore}</Text>
+              <Text style={styles.matchOverScore}>
+                {myScore} — {opponentScore}
+              </Text>
               <View style={styles.matchOverButtons}>
-                <TouchableOpacity style={styles.playAgainBtn} onPress={handlePlayAgain}>
+                <TouchableOpacity
+                  style={styles.playAgainBtn}
+                  onPress={handlePlayAgain}
+                >
                   <Text style={styles.playAgainBtnText}>Play Again</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.exitBtn} onPress={handleLeave}>
@@ -519,7 +599,14 @@ export default function OnlineGameScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
-  floatingLayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 500 },
+  floatingLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 500,
+  },
   floatingEmoji: { position: 'absolute', bottom: 120, alignItems: 'center' },
   floatingEmojiText: { fontSize: 48 },
   floatingEmojiName: {
@@ -560,7 +647,7 @@ const styles = StyleSheet.create({
   scrollContent: { paddingBottom: 100 },
   scoreRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 8,
     paddingHorizontal: 16,
     marginHorizontal: 12,
@@ -575,7 +662,7 @@ const styles = StyleSheet.create({
   scoreValue: { fontSize: 26, fontWeight: '800', color: '#ffffff', marginTop: 2 },
   scoreNearWin: { color: '#fbbf24' },
   scoreTies: { fontSize: 10, color: '#5a5a7a', marginTop: 1 },
-  scoreCenter: { alignItems: 'center', paddingHorizontal: 8 },
+  scoreCenter: { alignItems: 'center', paddingHorizontal: 8, paddingTop: 8 },
   scoreVs: { fontSize: 16, color: '#e94560' },
   scoreRound: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
   moveDisplay: {
@@ -592,12 +679,22 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.04)',
   },
   moveItem: { alignItems: 'center', flex: 1 },
-  moveLabel: { fontSize: 10, color: '#5a5a7a', textTransform: 'uppercase', marginBottom: 4, fontWeight: '600' },
+  moveLabel: {
+    fontSize: 10,
+    color: '#5a5a7a',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+    fontWeight: '600',
+  },
   moveCircle: {
-    width: 56, height: 56, borderRadius: 28,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: 'rgba(255,255,255,0.05)',
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 2, borderColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.08)',
   },
   moveIcon: { fontSize: 28 },
   moveVs: { fontSize: 18, color: '#5a5a7a', marginHorizontal: 6 },
@@ -606,7 +703,12 @@ const styles = StyleSheet.create({
   resultWin: { color: '#4ade80' },
   resultLose: { color: '#f87171' },
   resultTie: { color: '#fbbf24' },
-  buttonsArea: { justifyContent: 'center', paddingHorizontal: 12, paddingBottom: 12, paddingTop: 12 },
+  buttonsArea: {
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingBottom: 12,
+    paddingTop: 12,
+  },
   moveButtons: { flexDirection: 'row', justifyContent: 'center', gap: 12 },
   moveButton: {
     alignItems: 'center',
@@ -619,24 +721,21 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   moveBtnIcon: { fontSize: 28, marginBottom: 2 },
-  moveBtnName: { fontSize: 10, color: '#5a5a7a', fontWeight: '600', textTransform: 'uppercase' },
-  waitingText: { fontSize: 13, color: '#5a5a7a', textAlign: 'center' },
-  avatarWatchBox: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    gap: 6,
+  moveBtnName: {
+    fontSize: 10,
+    color: '#5a5a7a',
+    fontWeight: '600',
+    textTransform: 'uppercase',
   },
+  waitingText: { fontSize: 13, color: '#5a5a7a', textAlign: 'center' },
+  avatarWatchBox: { alignItems: 'center', paddingVertical: 24, gap: 6 },
   avatarWatchText: {
     fontSize: 16,
     color: '#a78bfa',
     fontWeight: '800',
     letterSpacing: 0.5,
   },
-  avatarWatchSubtext: {
-    fontSize: 11,
-    color: '#5a5a7a',
-    fontWeight: '600',
-  },
+  avatarWatchSubtext: { fontSize: 11, color: '#5a5a7a', fontWeight: '600' },
   matchOverOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(10, 10, 15, 0.92)',
@@ -651,8 +750,18 @@ const styles = StyleSheet.create({
   matchOverLose: { color: '#f87171' },
   matchOverScore: { fontSize: 20, color: '#8a8a9a', fontWeight: '700', marginTop: 4 },
   matchOverButtons: { flexDirection: 'row', gap: 12, marginTop: 24 },
-  playAgainBtn: { backgroundColor: '#e94560', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12 },
+  playAgainBtn: {
+    backgroundColor: '#e94560',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+  },
   playAgainBtnText: { color: '#ffffff', fontSize: 14, fontWeight: '700' },
-  exitBtn: { backgroundColor: 'rgba(255,255,255,0.06)', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 12 },
+  exitBtn: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+  },
   exitBtnText: { color: '#8a8a9a', fontSize: 14, fontWeight: '700' },
 });

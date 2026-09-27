@@ -16,6 +16,9 @@ import { ChevronLeft, RotateCcw } from 'lucide-react-native';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
+import RecentMovesTrail from '../components/RecentMovesTrail';
+
+const MAX_RECENT = 5;
 
 export default function GameScreen() {
   const navigation = useNavigation<any>();
@@ -45,9 +48,16 @@ export default function GameScreen() {
     ai,
   } = useGameStore();
 
+  // Recent moves (newest first)
+  const [p1RecentMoves, setP1RecentMoves] = useState<Move[]>([]);
+  const [p2RecentMoves, setP2RecentMoves] = useState<Move[]>([]);
+
+  // Reset game + init
   useEffect(() => {
     setMode(mode);
     resetGame();
+    setP1RecentMoves([]);
+    setP2RecentMoves([]);
 
     if (difficultyFromRoute) {
       useGameStore.getState().setAIDifficulty(difficultyFromRoute);
@@ -66,6 +76,7 @@ export default function GameScreen() {
     };
   }, [mode, difficultyFromRoute]);
 
+  // Result feedback + avatar stats
   useEffect(() => {
     if (winner) {
       if (winner === 'win') playSound('success');
@@ -89,6 +100,18 @@ export default function GameScreen() {
     }
   }, [winner]);
 
+  // Push recent moves whenever both moves become available
+  useEffect(() => {
+    if (player1Move && player2Move) {
+      setP1RecentMoves((prev) =>
+        [player1Move, ...prev].slice(0, MAX_RECENT)
+      );
+      setP2RecentMoves((prev) =>
+        [player2Move, ...prev].slice(0, MAX_RECENT)
+      );
+    }
+  }, [player1Move, player2Move]);
+
   const handlePlayerMove = (player: 1 | 2, move: Move) => {
     if (isPlaying) return;
     playSound('click');
@@ -110,6 +133,16 @@ export default function GameScreen() {
   const getPlayerName = (player: 1 | 2): string => {
     if (mode === 'pvp') return player === 1 ? 'Player 1' : 'Player 2';
     return player === 1 ? 'You' : 'AI';
+  };
+
+  const handleReset = () => {
+    resetGame();
+    setP1RecentMoves([]);
+    setP2RecentMoves([]);
+  };
+
+  const handleNextRound = () => {
+    clearMoves();
   };
 
   const renderMoveButton = (move: Move, player: 1 | 2) => {
@@ -158,7 +191,7 @@ export default function GameScreen() {
                 <Text style={styles.aiIconText}>🧠</Text>
               </TouchableOpacity>
             )}
-            <TouchableOpacity onPress={resetGame} style={styles.headerBtn}>
+            <TouchableOpacity onPress={handleReset} style={styles.headerBtn}>
               <RotateCcw size={20} color="#5a5a7a" />
             </TouchableOpacity>
           </View>
@@ -170,6 +203,7 @@ export default function GameScreen() {
               <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(1)}</Text>
               <Text style={styles.scoreValue}>{player1Score}</Text>
               <Text style={styles.scoreTies}>{player1Ties} ties</Text>
+              <RecentMovesTrail moves={p1RecentMoves} slots={5} size={22} />
             </View>
             <View style={styles.scoreCenter}>
               <Text style={styles.scoreVs}>⚡</Text>
@@ -179,6 +213,7 @@ export default function GameScreen() {
               <Text style={styles.scoreName} numberOfLines={1}>{getPlayerName(2)}</Text>
               <Text style={styles.scoreValue}>{player2Score}</Text>
               <Text style={styles.scoreTies}>{player2Ties} ties</Text>
+              <RecentMovesTrail moves={p2RecentMoves} slots={5} size={22} />
             </View>
           </View>
 
@@ -238,7 +273,7 @@ export default function GameScreen() {
             )}
             {isPlaying && <Text style={styles.waitingText}>⏳ Thinking...</Text>}
             {player1Move && player2Move && !isPlaying && winner && (
-              <TouchableOpacity style={styles.nextButton} onPress={clearMoves}>
+              <TouchableOpacity style={styles.nextButton} onPress={handleNextRound}>
                 <Text style={styles.nextButtonText}>Next Round →</Text>
               </TouchableOpacity>
             )}
@@ -269,7 +304,7 @@ const styles = StyleSheet.create({
   scrollContent: { paddingBottom: 40 },
   scoreRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 10,
     paddingHorizontal: 16,
     marginHorizontal: 12,
@@ -283,7 +318,7 @@ const styles = StyleSheet.create({
   scoreName: { fontSize: 11, color: '#5a5a7a', textTransform: 'uppercase', fontWeight: '600' },
   scoreValue: { fontSize: 28, fontWeight: '800', color: '#ffffff', marginTop: 2 },
   scoreTies: { fontSize: 10, color: '#5a5a7a', marginTop: 1 },
-  scoreCenter: { alignItems: 'center', paddingHorizontal: 8 },
+  scoreCenter: { alignItems: 'center', paddingHorizontal: 8, paddingTop: 8 },
   scoreVs: { fontSize: 16, color: '#e94560' },
   scoreRound: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
   moveDisplay: {

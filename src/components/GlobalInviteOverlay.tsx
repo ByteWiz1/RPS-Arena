@@ -7,47 +7,54 @@ import {
   Animated,
   Platform,
 } from 'react-native';
-import { useBattleStore } from '../store/battleStore';
 import { Swords, X, Check } from 'lucide-react-native';
 import { getSocket } from '../services/multiplayer';
+import { useBattleStore } from '../store/battleStore';
+import { navigationRef } from '../navigation/AppNavigator';
+import { useUserStore } from '../store/userStore';
 
 interface IncomingInvite {
   inviteId: string;
   fromName: string;
   fromId: string;
+  battleMode: 'human' | 'avatar';
 }
 
-interface Props {
-  onAccept?: (
-    roomCode: string,
-    playerId: string,
-    opponentName: string,
-    battleMode: string
-  ) => void;
-}
-
-export default function GlobalInviteOverlay({ onAccept }: Props) {
+export default function GlobalInviteOverlay() {
   const [invite, setInvite] = useState<IncomingInvite | null>(null);
   const [countdown, setCountdown] = useState(300);
   const [scale] = useState(new Animated.Value(0));
-  const setMode = useBattleStore((s) => s.setMode);
   const [response, setResponse] = useState<'accepted' | 'declined' | null>(null);
 
+  // "sent" = we're the inviter, waiting for their response
+  const [sentState, setSentState] = useState<{
+    toName: string;
+    status: 'pending' | 'accepted' | 'declined';
+  } | null>(null);
+
+  const { setMode } = useBattleStore();
+  const { identity } = useUserStore();
+
+  // ─────────────────────────────────────────────
+  // SOCKET LISTENERS
+  // ─────────────────────────────────────────────
   useEffect(() => {
     const socket = getSocket();
-    console.log('[OVERLAY] Mounting. Socket:', socket?.id, 'connected:', socket?.connected);
-
     if (!socket) {
-      console.log('[OVERLAY] No socket available yet');
+      console.log('[OVERLAY] No socket yet');
       return;
     }
 
+    console.log('[OVERLAY] Attached. socket:', socket.id, 'connected:', socket.connected);
+
+    // ─── We are the INVITEE — an invite arrived ───
     const handleInviteReceived = (data: any) => {
-      console.log('[OVERLAY] Received invite:', data);
+      console.log('[OVERLAY] Invite received:', data);
       setInvite({
         inviteId: data.inviteId,
         fromName: data.fromName,
         fromId: data.fromId,
+        battleMode: data.battleMode === 'avatar' ? 'avatar' : 'human',
       });
       setCountdown(300);
       setResponse(null);
@@ -60,32 +67,60 @@ export default function GlobalInviteOverlay({ onAccept }: Props) {
       }).start();
     };
 
+    // ─── We are the INVITER — they accepted ───
     const handleInviteAccepted = (data: any) => {
       console.log('[OVERLAY] Invite accepted:', data);
-      const inviteMode = data.battleMode === 'avatar' ? 'avatar' : 'human';
-  setMode(inviteMode);
-      dismiss();
-      if (onAccept) {
-        onAccept(data.roomCode, data.playerId, data.opponentName, inviteMode);
+
+      // Only show the inviter-side UI. The invitee navigates via roomReady
+      // from App.tsx, so the overlay shouldn't double-handle it.
+      // We detect "am I the inviter?" by comparing identity to the payload.
+      // Server sends playerId = the receiver's socket id for the receiver's event,
+      // and the sender's socket id for the sender's event. So we compare names.
+      const myName = identity?.username;
+      const isInviterSide = myName && data.opponentName === myName;
+
+      if (isInviterSide) {
+        console.log('[OVERLAY] We are inviter — showing MATCH STARTING');
+        setSentState({
+          toName: data.opponentName,
+          status: 'accepted',
+        });
       }
+      // Invitee side does nothing here — App.tsx handles roomReady navigation
+    };
+
+    // ─── We are the INVITER — they declined ───
+    const handleInviteDeclined = (data: any) => {
+      console.log('[OVERLAY] Invite declined:', data);
+      setSentState((prev) =>
+        prev ? { ...prev, status: 'declined' } : null
+      );
+      // Auto-dismiss the declined toast after 2.5s
+      setTimeout(() => setSentState(null), 2500);
     };
 
     const handleInviteExpired = () => {
       console.log('[OVERLAY] Invite expired');
       dismiss();
+      setSentState(null);
     };
 
     socket.on('inviteReceived', handleInviteReceived);
     socket.on('inviteAccepted', handleInviteAccepted);
+    socket.on('inviteDeclined', handleInviteDeclined);
     socket.on('inviteExpired', handleInviteExpired);
 
     return () => {
       socket.off('inviteReceived', handleInviteReceived);
       socket.off('inviteAccepted', handleInviteAccepted);
+      socket.off('inviteDeclined', handleInviteDeclined);
       socket.off('inviteExpired', handleInviteExpired);
     };
-  }, []);
+  }, [identity?.username, scale]);
 
+  // ─────────────────────────────────────────────
+  // COUNTDOWN (invitee side)
+  // ─────────────────────────────────────────────
   useEffect(() => {
     if (!invite || response) return;
     const interval = setInterval(() => {
@@ -112,10 +147,17 @@ export default function GlobalInviteOverlay({ onAccept }: Props) {
     });
   };
 
+  // ─────────────────────────────────────────────
+  // ACCEPT / DECLINE (invitee side)
+  // ─────────────────────────────────────────────
   const handleAccept = () => {
     if (!invite) return;
     console.log('[OVERLAY] Accepting invite');
     setResponse('accepted');
+
+    // Store the mode so screens can read it as a fallback
+    setMode(invite.battleMode);
+
     const socket = getSocket();
     if (socket) {
       socket.emit('respondToInvite', {
@@ -123,6 +165,9 @@ export default function GlobalInviteOverlay({ onAccept }: Props) {
         accepted: true,
       });
     }
+
+    // Navigation happens from App.tsx when `roomReady` arrives.
+    // Do not navigate here — avoids double-nav.
   };
 
   const handleDecline = () => {
@@ -139,6 +184,58 @@ export default function GlobalInviteOverlay({ onAccept }: Props) {
     setTimeout(dismiss, 400);
   };
 
+  // ─────────────────────────────────────────────
+  // RENDER — INVITER SIDE (waiting / accepted / declined)
+  // ─────────────────────────────────────────────
+  if (sentState) {
+    return (
+      <Animated.View
+        style={[styles.overlay, { transform: [{ scale }], opacity: scale }]}
+        pointerEvents="box-none"
+      >
+        <View style={styles.card}>
+          <View style={styles.iconWrap}>
+            <Swords size={32} color="#e94560" />
+          </View>
+
+          {sentState.status === 'accepted' && (
+            <>
+              <Text style={styles.title}>MATCH STARTING</Text>
+              <Text style={styles.subtitle}>
+                {sentState.toName} accepted — entering room...
+              </Text>
+              <View style={styles.spinner}>
+                <Text style={styles.spinnerText}>⏳</Text>
+              </View>
+            </>
+          )}
+
+          {sentState.status === 'declined' && (
+            <>
+              <Text style={styles.title}>DECLINED</Text>
+              <Text style={styles.subtitle}>
+                {sentState.toName} declined your invite
+              </Text>
+            </>
+          )}
+
+          {sentState.status === 'pending' && (
+            <>
+              <Text style={styles.title}>INVITE SENT</Text>
+              <Text style={styles.subtitle}>Waiting for {sentState.toName}...</Text>
+              <View style={styles.spinner}>
+                <Text style={styles.spinnerText}>⏳</Text>
+              </View>
+            </>
+          )}
+        </View>
+      </Animated.View>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // RENDER — INVITEE SIDE (invite popup)
+  // ─────────────────────────────────────────────
   if (!invite) return null;
 
   const formatTime = (sec: number) => {
@@ -176,7 +273,11 @@ export default function GlobalInviteOverlay({ onAccept }: Props) {
             <Text style={styles.fromLabel}>FROM</Text>
             <Text style={styles.fromName}>{invite.fromName}</Text>
             <Text style={styles.message}>
-              is inviting you to a Rock Paper Scissors match!
+              is inviting you to a{' '}
+              {invite.battleMode === 'avatar'
+                ? 'Avatar Arena battle'
+                : 'Rock Paper Scissors match'}
+              !
             </Text>
 
             <Text style={styles.timerText}>
@@ -268,6 +369,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#8a8a9a',
     marginTop: 8,
+    textAlign: 'center',
   },
   message: {
     fontSize: 13,

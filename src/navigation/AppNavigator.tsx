@@ -1,6 +1,10 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import {
+  NavigationContainer,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
+
 import HomeScreen from '../screens/HomeScreen';
 import GameScreen from '../screens/GameScreen';
 import OnlineLobbyScreen from '../screens/OnlineLobbyScreen';
@@ -16,37 +20,44 @@ import AcceptedScreen from '../screens/AcceptedScreen';
 import ChooseOpponentScreen from '../screens/ChooseOpponentScreen';
 import AISettingsScreen from '../screens/AISettingsScreen';
 import AvatarImageScreen from '../screens/AvatarImageScreen';
-import GlobalInviteOverlay from '../components/GlobalInviteOverlay';
-import { useNavigation } from '@react-navigation/native';
 import OnlineModeScreen from '../screens/OnlineModeScreen';
-import { useUserStore } from '../store/userStore';
 
-const Stack = createStackNavigator();
-
-function InviteOverlayWrapper() {
-  const navigation = useNavigation<any>();
-  const { identity } = useUserStore();
-  const handleAccept = (
-    roomCode: string,
-    playerId: string,
-    opponentName: string,
-    battleMode: string = 'human'
-  ) => {
-    navigation.navigate('OnlineGame', {
-      roomCode,
-      playerId,
-      playerName: identity?.username || 'Player',
-      opponentName,
-      fromInvite: true,
-    });
+export type RootStackParamList = {
+  Home: undefined;
+  Game: { mode?: string } | undefined;
+  OnlineMode: undefined;
+  OnlineLobby: undefined;
+  OnlineGame: {
+    roomCode: string;
+    playerId: string;
+    playerName: string;
+    opponentName?: string;
+    battleMode: 'human' | 'avatar';
+    isHost?: boolean;
+    fromInvite?: boolean;
+    fromRoomReady?: boolean;
   };
+  Profile: undefined;
+  Training: undefined;
+  AIDojo: undefined;
+  DojoMatch: any;
+  Settings: undefined;
+  Leaderboard: undefined;
+  Premium: undefined;
+  Accepted: any;
+  ChooseOpponent: undefined;
+  AISettings: undefined;
+  AvatarImage: any;
+};
 
-  return <GlobalInviteOverlay onAccept={handleAccept} />;
-}
+const Stack = createStackNavigator<RootStackParamList>();
+
+export const navigationRef =
+  createNavigationContainerRef<RootStackParamList>();
 
 export default function AppNavigator() {
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Stack.Navigator
         initialRouteName="Home"
         screenOptions={{
@@ -56,6 +67,7 @@ export default function AppNavigator() {
       >
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Game" component={GameScreen} />
+        <Stack.Screen name="OnlineMode" component={OnlineModeScreen} />
         <Stack.Screen name="OnlineLobby" component={OnlineLobbyScreen} />
         <Stack.Screen name="OnlineGame" component={OnlineGameScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
@@ -69,9 +81,7 @@ export default function AppNavigator() {
         <Stack.Screen name="ChooseOpponent" component={ChooseOpponentScreen} />
         <Stack.Screen name="AISettings" component={AISettingsScreen} />
         <Stack.Screen name="AvatarImage" component={AvatarImageScreen} />
-        <Stack.Screen name="OnlineMode" component={OnlineModeScreen} />
       </Stack.Navigator>
-      <InviteOverlayWrapper />
     </NavigationContainer>
   );
 }

@@ -16,6 +16,7 @@ import { AdaptiveAI, AIDifficulty } from '../engine/AIEngine';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
+import RecentMovesTrail from '../components/RecentMovesTrail';
 
 interface Master {
   id: string;
@@ -37,6 +38,7 @@ const MASTERS: Record<string, Master> = {
 };
 
 const ROUNDS_TO_WIN = 5;
+const MAX_RECENT = 5;
 
 export default function DojoMatchScreen() {
   const navigation = useNavigation<any>();
@@ -59,6 +61,10 @@ export default function DojoMatchScreen() {
   const [matchOver, setMatchOver] = useState(false);
   const [matchWinner, setMatchWinner] = useState<'player' | 'ai' | null>(null);
 
+  // Recent moves (newest first)
+  const [myRecentMoves, setMyRecentMoves] = useState<Move[]>([]);
+  const [aiRecentMoves, setAiRecentMoves] = useState<Move[]>([]);
+
   useEffect(() => {
     startGameMusic();
     return () => {
@@ -73,6 +79,14 @@ export default function DojoMatchScreen() {
       else playSound('tie');
     }
   }, [winner]);
+
+  // Push recent moves when both moves are present
+  useEffect(() => {
+    if (myMove && aiMove) {
+      setMyRecentMoves((prev) => [myMove, ...prev].slice(0, MAX_RECENT));
+      setAiRecentMoves((prev) => [aiMove, ...prev].slice(0, MAX_RECENT));
+    }
+  }, [myMove, aiMove]);
 
   useEffect(() => {
     if (myScore >= ROUNDS_TO_WIN && !matchOver) {
@@ -169,6 +183,8 @@ export default function DojoMatchScreen() {
     setWinner(null);
     setMatchOver(false);
     setMatchWinner(null);
+    setMyRecentMoves([]);
+    setAiRecentMoves([]);
     ai.reset();
   };
 
@@ -213,6 +229,7 @@ export default function DojoMatchScreen() {
               <Text style={styles.scoreName} numberOfLines={1}>{avatar.name}</Text>
               <Text style={styles.scoreValue}>{myScore}</Text>
               <Text style={styles.scoreTies}>{myTies} ties</Text>
+              <RecentMovesTrail moves={myRecentMoves} slots={5} size={22} />
             </View>
             <View style={styles.scoreCenter}>
               <Text style={styles.scoreVs}>⚡</Text>
@@ -222,6 +239,7 @@ export default function DojoMatchScreen() {
               <Text style={styles.scoreName} numberOfLines={1}>{master.name}</Text>
               <Text style={styles.scoreValue}>{aiScore}</Text>
               <Text style={styles.scoreTies}>{aiTies} ties</Text>
+              <RecentMovesTrail moves={aiRecentMoves} slots={5} size={22} />
             </View>
           </View>
 
@@ -324,7 +342,7 @@ const styles = StyleSheet.create({
   scrollContent: { paddingBottom: 40 },
   scoreRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingVertical: 10,
     paddingHorizontal: 16,
     marginHorizontal: 12,
@@ -338,7 +356,7 @@ const styles = StyleSheet.create({
   scoreName: { fontSize: 11, color: '#5a5a7a', textTransform: 'uppercase', fontWeight: '600' },
   scoreValue: { fontSize: 28, fontWeight: '800', color: '#ffffff', marginTop: 2 },
   scoreTies: { fontSize: 10, color: '#5a5a7a', marginTop: 1 },
-  scoreCenter: { alignItems: 'center', paddingHorizontal: 8 },
+  scoreCenter: { alignItems: 'center', paddingHorizontal: 8, paddingTop: 8 },
   scoreVs: { fontSize: 16, color: '#e94560' },
   scoreRound: { fontSize: 10, color: '#5a5a7a', marginTop: 2 },
   moveDisplay: {
