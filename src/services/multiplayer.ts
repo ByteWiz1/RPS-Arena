@@ -329,6 +329,34 @@ export function getPlayerStatsFromServer(): Promise<PlayerStats> {
 }
 
 // ============================================================
+// DOJO MATCH SYNC  (Chat 5 — roadmap item #2)
+//
+// Fire-and-forget. Dojo matches are player-vs-AI, so there is no
+// room, no opponent socket, and no need to await a reply. The server
+// persists the result to Supabase and pushes updated `playerStats`
+// back to this socket — anything listening via `onPlayerStatsUpdate`
+// will auto-refresh.
+// ============================================================
+export interface DojoMatchPayload {
+  result: 'win' | 'loss' | 'tie';
+  opponentName: string;
+  myScore: number;
+  opponentScore: number;
+  myTies: number;
+  opponentTies: number;
+  rounds: number;
+}
+
+export function recordDojoMatchOnServer(payload: DojoMatchPayload): void {
+  if (!socket?.connected) {
+    // Silently no-op when offline — dojo progression is already
+    // tracked locally, and the server write is additive.
+    return;
+  }
+  socket.emit('recordDojoMatch', payload);
+}
+
+// ============================================================
 // LISTEN FOR PUSHED STATS (auto-updated on match end)
 // ============================================================
 export function onPlayerStatsUpdate(

@@ -14,6 +14,7 @@ import { useSettingsStore } from '../store/settingsStore';
 import { ALL_MOVES, MOVE_ICONS, MOVE_NAMES, Move, getWinner } from '../engine/GameEngine';
 import { AdaptiveAI, AIDifficulty } from '../engine/AIEngine';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
+import { recordDojoMatchOnServer } from '../services/multiplayer';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
 import RecentMovesTrail from '../components/RecentMovesTrail';
@@ -111,6 +112,16 @@ export default function DojoMatchScreen() {
           opponentTies: aiTies,
           result: 'lose',
         });
+        // Chat 5 — sync to server. Fire-and-forget, additive.
+        recordDojoMatchOnServer({
+          result: 'loss',
+          opponentName: master.name,
+          myScore,
+          opponentScore: aiScore,
+          myTies,
+          opponentTies: aiTies,
+          rounds: round,
+        });
       }
     }
   }, [myScore, aiScore]);
@@ -134,6 +145,16 @@ export default function DojoMatchScreen() {
       myTies,
       opponentTies: aiTies,
       result: 'win',
+    });
+    // Chat 5 — sync to server. Fire-and-forget, additive.
+    recordDojoMatchOnServer({
+      result: 'win',
+      opponentName: master.name,
+      myScore,
+      opponentScore: aiScore,
+      myTies,
+      opponentTies: aiTies,
+      rounds: round,
     });
   };
 
