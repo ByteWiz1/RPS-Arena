@@ -51,16 +51,16 @@ export default function OnlineGameScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
 
-  // Route params — battleMode from params first, store as fallback
   const params = route.params || {};
   const roomCode = params.roomCode || '';
   const playerId = params.playerId || '';
   const playerName = params.playerName || 'Player';
   const initialOpponent = params.opponentName || 'Opponent';
   const storeMode = useBattleStore((s) => s.mode);
-  const battleMode: 'human' | 'avatar' = params.battleMode === 'avatar' || params.battleMode === 'human'
-    ? params.battleMode
-    : storeMode;
+  const battleMode: 'human' | 'avatar' =
+    params.battleMode === 'avatar' || params.battleMode === 'human'
+      ? params.battleMode
+      : storeMode;
   const isAvatarMode = battleMode === 'avatar';
 
   console.log('[GAME] battleMode:', battleMode, 'isAvatar:', isAvatarMode);
@@ -86,7 +86,6 @@ export default function OnlineGameScreen() {
   const [matchOver, setMatchOver] = useState(false);
   const [iWonMatch, setIWonMatch] = useState(false);
 
-  // ─── Recent moves (newest first, max 5) ───
   const [myRecentMoves, setMyRecentMoves] = useState<Move[]>([]);
   const [opponentRecentMoves, setOpponentRecentMoves] = useState<Move[]>([]);
   const opponentIdRef = useRef<string | null>(null);
@@ -94,6 +93,24 @@ export default function OnlineGameScreen() {
   const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const EMOJI_LIST = ['👍', '😂', '🔥', '😎', '🤝', '😤', '💀', '🎉'];
+
+  // ─── Match screen presence ───
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    console.log('[GAME] Emitting enterMatchScreen for room', roomCode);
+    socket.emit('enterMatchScreen', { roomCode });
+
+    return () => {
+      console.log('[GAME] Unmounting — emitting leaveMatchScreen + leaveRoom');
+      const s = getSocket();
+      if (s) {
+        s.emit('leaveMatchScreen', { roomCode });
+        s.emit('leaveRoom');
+      }
+    };
+  }, [roomCode]);
 
   useEffect(() => {
     startGameMusic();
@@ -131,7 +148,6 @@ export default function OnlineGameScreen() {
     });
   };
 
-  // Helper: apply recentMoves payload from server
   const applyRecentMoves = (payload: any) => {
     if (!payload) return;
     const myList: Move[] = payload[playerId] || [];
@@ -142,7 +158,6 @@ export default function OnlineGameScreen() {
     if (oppId) opponentIdRef.current = oppId;
     const oppList: Move[] = oppId ? payload[oppId] || [] : [];
 
-    // Server sends oldest → newest; we store newest-first for the component
     setMyRecentMoves([...myList].reverse());
     setOpponentRecentMoves([...oppList].reverse());
   };
@@ -182,7 +197,6 @@ export default function OnlineGameScreen() {
       if (data.recentMoves) applyRecentMoves(data.recentMoves);
     });
 
-    // roomReady: initial state
     socket.on('roomReady', (data: any) => {
       if (data.recentMoves) applyRecentMoves(data.recentMoves);
       if (data.players) {
@@ -234,7 +248,6 @@ export default function OnlineGameScreen() {
       setOpponentTies(opponentId2 ? data.ties?.[opponentId2] || 0 : 0);
       setRound(data.round);
 
-      // Update recent moves
       if (data.recentMoves) applyRecentMoves(data.recentMoves);
 
       if (data.matchOver && data.matchWinner) {
@@ -372,9 +385,8 @@ export default function OnlineGameScreen() {
 
   const handleLeave = () => {
     stopCelebration();
-    const socket = getSocket();
-    if (socket) socket.emit('leaveRoom');
-    disconnectFromServer();
+    // Note: the mount effect's cleanup will emit leaveMatchScreen + leaveRoom
+    // automatically when navigation.goBack() unmounts this screen.
     navigation.goBack();
   };
 

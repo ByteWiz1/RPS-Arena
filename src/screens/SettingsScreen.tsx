@@ -25,6 +25,8 @@ import {
   Edit3,
   X,
   AlertTriangle,
+  BarChart3,
+  ChevronRight,
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSettingsStore } from '../store/settingsStore';
@@ -89,6 +91,7 @@ export default function SettingsScreen() {
 
   // ─────────────────────────────────────────────────────────
   // CHANGE USERNAME
+  // Server resolves the caller via the socket's token — no userId sent.
   // ─────────────────────────────────────────────────────────
   const openUsernameModal = () => {
     setNewUsername(identity?.username || '');
@@ -130,8 +133,9 @@ export default function SettingsScreen() {
     setUsernameError(null);
 
     try {
-      // 1. Tell server first (so it can reject duplicates)
-      const result = await changeUsernameOnServer(identity.userId, trimmed);
+      // Tell server first (so it can reject duplicates).
+      // Server identifies the caller via the socket token — no userId arg.
+      const result = await changeUsernameOnServer(trimmed);
 
       if (!result.success) {
         setUsernameError(result.message || 'Could not change username');
@@ -139,8 +143,9 @@ export default function SettingsScreen() {
         return;
       }
 
-      // 2. Persist locally
-      await updateUser({ username: trimmed });
+      // Persist locally using the (possibly normalized) server response.
+      const finalUsername = result.username || trimmed;
+      await updateUser({ username: finalUsername });
 
       setSavingUsername(false);
       setUsernameModalVisible(false);
@@ -153,6 +158,7 @@ export default function SettingsScreen() {
 
   // ─────────────────────────────────────────────────────────
   // DELETE ACCOUNT
+  // Server resolves the caller via the socket token.
   // ─────────────────────────────────────────────────────────
   const openDeleteModal = () => {
     setDeleteConfirmText('');
@@ -171,10 +177,11 @@ export default function SettingsScreen() {
     setDeleting(true);
 
     try {
-      // 1. Tell server (best-effort)
+      // 1. Tell server (best-effort). Server wipes userAccounts +
+      //    accountsByUserId + matchHistory + playerStats for this userId.
       await deleteAccountOnServer();
 
-      // 2. Wipe local identity
+      // 2. Wipe local identity (clears @rps_identity)
       await clearUser();
 
       // 3. Wipe everything else local
@@ -228,6 +235,23 @@ export default function SettingsScreen() {
               </View>
             </View>
             <Edit3 size={18} color="#5a5a7a" />
+          </TouchableOpacity>
+
+          {/* ─── VIEW MY STATS (new) ─── */}
+          <TouchableOpacity
+            style={styles.settingItem}
+            onPress={() => navigation.navigate('Profile')}
+          >
+            <View style={styles.settingLeft}>
+              <BarChart3 size={20} color="#a78bfa" />
+              <View>
+                <Text style={styles.settingLabelSwitch}>View My Stats</Text>
+                <Text style={styles.settingSubValue}>
+                  Stats, history & leaderboard
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#5a5a7a" />
           </TouchableOpacity>
 
           {/* ─── AUDIO SECTION ─── */}

@@ -27,6 +27,7 @@ import OnlineUsersList from '../components/OnlineUsersList';
 import { useOnlineStore } from '../store/onlineStore';
 import { useBattleStore } from '../store/battleStore';
 import { useUserStore } from '../store/userStore';
+import { useAvatarStore } from '../store/avatarStore';
 
 type Mode = 'main' | 'host' | 'join';
 
@@ -37,6 +38,7 @@ export default function OnlineLobbyScreen() {
   const battleMode = useBattleStore((s) => s.mode);
   const { users, count } = useOnlineStore();
   const { identity } = useUserStore();
+  const getSelectedAvatar = useAvatarStore((s) => s.getSelectedAvatar);
 
   const playerName = identity?.username || 'Player';
   const playerUserId = identity?.userId || '';
@@ -56,9 +58,14 @@ export default function OnlineLobbyScreen() {
   const [inviteStatus, setInviteStatus] = useState<string>('');
   const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
 
-  // ─────────────────────────────────────────────
-  // Lifecycle
-  // ─────────────────────────────────────────────
+  // Personality of the player's currently selected avatar.
+  // Server accepts either the numeric personality object or the string
+  // 'adaptive' fallback — see rps-server/aiEngine.js normalizePersonality().
+  const buildPersonalityPayload = () => {
+    const avatar = getSelectedAvatar();
+    return avatar?.personality ?? 'adaptive';
+  };
+
   useEffect(() => {
     console.log('[LOBBY] battleMode from store:', battleMode);
     console.log('[LOBBY] identity:', playerName, playerUserId);
@@ -80,38 +87,15 @@ export default function OnlineLobbyScreen() {
     };
   }, []);
 
-  // ─────────────────────────────────────────────
-  // Socket listeners
-  // ─────────────────────────────────────────────
+  // Only search-result and recent-opponents listeners live in the lobby.
+  // Invite lifecycle events (received/accepted/declined/expired) are all
+  // handled by GlobalInviteOverlay. Do NOT duplicate them here.
   const setupListeners = () => {
     const socket = getSocket();
     if (!socket) {
       setTimeout(setupListeners, 500);
       return;
     }
-
-    socket.on('inviteSent', () => {
-      // The toast is already shown by handleSendInvite — nothing extra
-    });
-
-    socket.on('inviteDeclined', (data: any) => {
-      const who = data?.byName || 'Player';
-      setInviteStatus(`${who} declined your invite`);
-      setPendingInviteId(null);
-      setTimeout(() => setInviteStatus(''), 3000);
-    });
-
-    socket.on('inviteExpired', () => {
-      setInviteStatus('Invite expired');
-      setPendingInviteId(null);
-      setTimeout(() => setInviteStatus(''), 3000);
-    });
-
-    socket.on('inviteAccepted', (data: any) => {
-      // App.tsx handles navigation via roomReady.
-      // We just clear the pending indicator.
-      setPendingInviteId(null);
-    });
 
     socket.on('searchResult', (data: any) => {
       setSearching(false);
@@ -124,6 +108,24 @@ export default function OnlineLobbyScreen() {
       if (data.code) setHostCode(data.code);
     });
 
+    // We DO listen for inviteSent so we can clear the "sending..." spinner
+    socket.on('inviteSent', () => {
+      setPendingInviteId(null);
+    });
+
+    // And we listen for decline/expire purely to show a toast in the lobby
+    // (the overlay handles the modal — this is just the small inline message)
+    socket.on('inviteDeclined', (data: any) => {
+      const who = data?.byName || 'Player';
+      setInviteStatus(`${who} declined your invite`);
+      setTimeout(() => setInviteStatus(''), 3000);
+    });
+
+    socket.on('inviteExpired', () => {
+      setInviteStatus('Invite expired');
+      setTimeout(() => setInviteStatus(''), 3000);
+    });
+
     if (socket.connected) {
       socket.emit('getOnlineUsers');
       socket.emit('getOnlineCount');
@@ -133,13 +135,12 @@ export default function OnlineLobbyScreen() {
   const teardownListeners = () => {
     const socket = getSocket();
     if (!socket) return;
-    socket.off('inviteSent');
-    socket.off('inviteDeclined');
-    socket.off('inviteExpired');
-    socket.off('inviteAccepted');
     socket.off('searchResult');
     socket.off('recentOpponents');
     socket.off('hostCode');
+    socket.off('inviteSent');
+    socket.off('inviteDeclined');
+    socket.off('inviteExpired');
   };
 
   const ensureConnected = async (): Promise<boolean> => {
@@ -151,9 +152,6 @@ export default function OnlineLobbyScreen() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // HOST — creates room, stays on host screen
-  // ─────────────────────────────────────────────
   const handleHost = async () => {
     setServerError('');
     setIsConnecting(true);
@@ -182,12 +180,13 @@ export default function OnlineLobbyScreen() {
       setServerError(data.message || 'Could not create room');
     });
 
-    socket.emit('createRoom', { name: playerName, battleMode });
+    socket.emit('createRoom', {
+      name: playerName,
+      battleMode,
+      avatarPersonality: buildPersonalityPayload(),
+    });
   };
 
-  // ─────────────────────────────────────────────
-  // JOIN — waits for someone to invite, stays on join screen
-  // ─────────────────────────────────────────────
   const handleJoinAsPlayer = async () => {
     setServerError('');
     setIsConnecting(true);
@@ -208,9 +207,6 @@ export default function OnlineLobbyScreen() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // Search
-  // ─────────────────────────────────────────────
   const handleSearchPlayer = () => {
     if (!searchQuery.trim()) return;
     setSearching(true);
@@ -219,18 +215,18 @@ export default function OnlineLobbyScreen() {
     if (socket) socket.emit('searchPlayer', { username: searchQuery.trim() });
   };
 
-  // ─────────────────────────────────────────────
-  // Send invite
-  // ─────────────────────────────────────────────
   const handleSendInvite = (targetId: string, targetName: string) => {
     const socket = getSocket();
     if (!socket) return;
     setPendingInviteId(targetId);
-    socket.emit('sendInvite', { targetId, battleMode });
+    socket.emit('sendInvite', {
+      targetId,
+      battleMode,
+      avatarPersonality: buildPersonalityPayload(),
+    });
     setInviteStatus(`Invite sent to ${targetName}...`);
     setTimeout(() => {
       setInviteStatus('');
-      setPendingInviteId(null);
     }, 5000);
   };
 
@@ -243,81 +239,6 @@ export default function OnlineLobbyScreen() {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ─────────────────────────────────────────────
-  // Create room with custom code
-  // ─────────────────────────────────────────────
-  const handleCreateRoomWithCode = async () => {
-    setCodeError(false);
-    setServerError('');
-    if (createCode.length !== 4) {
-      setCodeError(true);
-      return;
-    }
-    setIsConnecting(true);
-    const connected = await ensureConnected();
-    if (!connected) {
-      setServerError('Could not connect to server');
-      setIsConnecting(false);
-      return;
-    }
-    const socket = getSocket();
-    if (!socket) {
-      setIsConnecting(false);
-      return;
-    }
-    socket.once('roomCreated', (data: any) => {
-      setIsConnecting(false);
-      setHostCode(data.code);
-      setMode('host');
-      // App.tsx navigates when roomReady fires (i.e. when a joiner arrives)
-    });
-    socket.once('error', (data: any) => {
-      setIsConnecting(false);
-      setServerError(data.message);
-    });
-    socket.emit('createRoom', {
-      name: playerName,
-      customCode: createCode.toUpperCase(),
-      battleMode,
-    });
-  };
-
-  // ─────────────────────────────────────────────
-  // Join with code
-  // ─────────────────────────────────────────────
-  const handleJoinByCode = async () => {
-    setCodeError(false);
-    setServerError('');
-    if (joinCode.length !== 4) {
-      setCodeError(true);
-      return;
-    }
-    setIsConnecting(true);
-    const connected = await ensureConnected();
-    if (!connected) {
-      setServerError('Could not connect to server');
-      setIsConnecting(false);
-      return;
-    }
-    const socket = getSocket();
-    if (!socket) {
-      setIsConnecting(false);
-      return;
-    }
-    socket.once('error', (data: any) => {
-      setIsConnecting(false);
-      setServerError(data.message);
-    });
-    socket.emit('joinRoom', {
-      code: joinCode.toUpperCase(),
-      name: playerName,
-    });
-    // App.tsx navigates when roomReady fires
-  };
-
-  // ─────────────────────────────────────────────
-  // RENDER: MAIN
-  // ─────────────────────────────────────────────
   const renderMain = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.onlineBadge}>
@@ -368,40 +289,12 @@ export default function OnlineLobbyScreen() {
         selfUserId={playerUserId}
       />
 
-      <View style={styles.divider}>
-        <View style={styles.dividerLine} />
-        <Text style={styles.dividerText}>OR JOIN WITH CODE</Text>
-        <View style={styles.dividerLine} />
-      </View>
-
-      <TextInput
-        style={[styles.codeInput, codeError && styles.inputError]}
-        placeholder="ABCD"
-        placeholderTextColor="#3a3a4a"
-        value={joinCode}
-        onChangeText={(text) => {
-          setJoinCode(text.toUpperCase());
-          if (codeError) setCodeError(false);
-        }}
-        maxLength={4}
-        autoCapitalize="characters"
-      />
-      {codeError && <Text style={styles.errorText}>⚠️ Enter a 4-character code</Text>}
-
-      <TouchableOpacity
-        style={styles.codeButton}
-        onPress={handleJoinByCode}
-        disabled={isConnecting}
-      >
-        {isConnecting ? (
-          <ActivityIndicator color="#ffffff" />
-        ) : (
-          <>
-            <LogIn size={20} color="#ffffff" />
-            <Text style={styles.codeButtonText}>Join with Code</Text>
-          </>
-        )}
-      </TouchableOpacity>
+      {inviteStatus ? (
+        <View style={styles.inviteStatusBox}>
+          <ActivityIndicator color="#fbbf24" size="small" />
+          <Text style={styles.inviteStatusText}>{inviteStatus}</Text>
+        </View>
+      ) : null}
 
       {serverError ? (
         <View style={styles.serverErrorBox}>
@@ -411,9 +304,6 @@ export default function OnlineLobbyScreen() {
     </ScreenScroll>
   );
 
-  // ─────────────────────────────────────────────
-  // RENDER: HOST
-  // ─────────────────────────────────────────────
   const renderHost = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.hostHeader}>
@@ -439,13 +329,20 @@ export default function OnlineLobbyScreen() {
       </View>
 
       <Text style={styles.codeHint}>
-        Waiting for an opponent — the match starts as soon as someone joins
+        Waiting for an opponent — match starts as soon as someone joins
       </Text>
 
       <View style={styles.waitingBox}>
         <ActivityIndicator color="#e94560" size="small" />
         <Text style={styles.waitingText}>Waiting for opponent...</Text>
       </View>
+
+      {inviteStatus ? (
+        <View style={styles.inviteStatusBox}>
+          <ActivityIndicator color="#fbbf24" size="small" />
+          <Text style={styles.inviteStatusText}>{inviteStatus}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.divider}>
         <View style={styles.dividerLine} />
@@ -505,13 +402,6 @@ export default function OnlineLobbyScreen() {
         </View>
       )}
 
-      {inviteStatus ? (
-        <View style={styles.inviteStatusBox}>
-          <ActivityIndicator color="#fbbf24" size="small" />
-          <Text style={styles.inviteStatusText}>{inviteStatus}</Text>
-        </View>
-      ) : null}
-
       <View style={styles.divider}>
         <View style={styles.dividerLine} />
         <Text style={styles.dividerText}>
@@ -528,9 +418,6 @@ export default function OnlineLobbyScreen() {
     </ScreenScroll>
   );
 
-  // ─────────────────────────────────────────────
-  // RENDER: JOIN
-  // ─────────────────────────────────────────────
   const renderJoin = () => (
     <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
       <View style={styles.hostHeader}>
@@ -567,7 +454,35 @@ export default function OnlineLobbyScreen() {
 
       <TouchableOpacity
         style={styles.codeButton}
-        onPress={handleJoinByCode}
+        onPress={async () => {
+          setCodeError(false);
+          setServerError('');
+          if (joinCode.length !== 4) {
+            setCodeError(true);
+            return;
+          }
+          setIsConnecting(true);
+          const connected = await ensureConnected();
+          if (!connected) {
+            setServerError('Could not connect to server');
+            setIsConnecting(false);
+            return;
+          }
+          const socket = getSocket();
+          if (!socket) {
+            setIsConnecting(false);
+            return;
+          }
+          socket.once('error', (data: any) => {
+            setIsConnecting(false);
+            setServerError(data.message);
+          });
+          socket.emit('joinRoom', {
+            code: joinCode.toUpperCase(),
+            name: playerName,
+            avatarPersonality: buildPersonalityPayload(),
+          });
+        }}
         disabled={isConnecting}
       >
         {isConnecting ? (
@@ -809,6 +724,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(251, 191, 36, 0.08)',
     borderWidth: 1,
     borderColor: 'rgba(251, 191, 36, 0.2)',
+    marginTop: 12,
     marginBottom: 8,
   },
   inviteStatusText: { color: '#fbbf24', fontSize: 12, fontWeight: '700' },

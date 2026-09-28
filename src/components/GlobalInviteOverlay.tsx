@@ -10,8 +10,8 @@ import {
 import { Swords, X, Check } from 'lucide-react-native';
 import { getSocket } from '../services/multiplayer';
 import { useBattleStore } from '../store/battleStore';
-import { navigationRef } from '../navigation/AppNavigator';
 import { useUserStore } from '../store/userStore';
+import { useAvatarStore } from '../store/avatarStore';
 
 interface IncomingInvite {
   inviteId: string;
@@ -25,8 +25,6 @@ export default function GlobalInviteOverlay() {
   const [countdown, setCountdown] = useState(300);
   const [scale] = useState(new Animated.Value(0));
   const [response, setResponse] = useState<'accepted' | 'declined' | null>(null);
-
-  // "sent" = we're the inviter, waiting for their response
   const [sentState, setSentState] = useState<{
     toName: string;
     status: 'pending' | 'accepted' | 'declined';
@@ -34,106 +32,155 @@ export default function GlobalInviteOverlay() {
 
   const { setMode } = useBattleStore();
   const { identity } = useUserStore();
+  const getSelectedAvatar = useAvatarStore((s) => s.getSelectedAvatar);
 
-  // ─────────────────────────────────────────────
-  // SOCKET LISTENERS
-  // ─────────────────────────────────────────────
+  // Personality of the player's currently selected avatar.
+  // Server accepts either the numeric personality object or the string
+  // 'adaptive' fallback — see rps-server/aiEngine.js normalizePersonality().
+  const buildPersonalityPayload = () => {
+    const avatar = getSelectedAvatar();
+    return avatar?.personality ?? 'adaptive';
+  };
+
+  // ─── Attach socket listeners, retrying until socket exists ───
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket) {
-      console.log('[OVERLAY] No socket yet');
-      return;
+    let cleanup: (() => void) | null = null;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const attach = () => {
+      const socket = getSocket();
+      if (!socket) return false;
+
+      console.log('[OVERLAY] Attached listeners. socket:', socket.id);
+
+      const handleInviteReceived = (data: any) => {
+        console.log('[OVERLAY] Invite received:', data);
+        setInvite({
+          inviteId: data.inviteId,
+          fromName: data.fromName,
+          fromId: data.fromId,
+          battleMode: data.battleMode === 'avatar' ? 'avatar' : 'human',
+        });
+        setCountdown(300);
+        setResponse(null);
+        scale.setValue(0);
+        Animated.spring(scale, {
+          toValue: 1,
+          useNativeDriver: true,
+          damping: 12,
+          stiffness: 150,
+        }).start();
+      };
+
+      const handleInviteAccepted = (data: any) => {
+        console.log('[OVERLAY] Invite accepted event:', data);
+
+        // Determine if we're the inviter or invitee.
+        // The server sends the event to BOTH sides.
+        //   - Inviter receives: opponentName = invitee's name
+        //   - Invitee receives: opponentName = inviter's name
+        const myName = identity?.username;
+        const iAmInviter = myName && data.opponentName === myName;
+
+        if (iAmInviter) {
+          console.log('[OVERLAY] Showing MATCH STARTING (inviter side)');
+          setSentState({
+            toName: data.opponentName,
+            status: 'accepted',
+          });
+          scale.setValue(0);
+          Animated.spring(scale, {
+            toValue: 1,
+            useNativeDriver: true,
+            damping: 12,
+            stiffness: 150,
+          }).start();
+        } else {
+          // Invitee — the invite popup is already showing its own
+          // "MATCH STARTING" state via the `response` flag. Nothing to do.
+        }
+      };
+
+      const handleInviteDeclined = (data: any) => {
+        console.log('[OVERLAY] Invite declined:', data);
+        const who = data?.byName || 'Player';
+        setSentState({ toName: who, status: 'declined' });
+        setResponse('declined');
+        scale.setValue(0);
+        Animated.spring(scale, {
+          toValue: 1,
+          useNativeDriver: true,
+          damping: 12,
+          stiffness: 150,
+        }).start();
+        setTimeout(() => {
+          clearOverlay();
+        }, 2500);
+      };
+
+      const handleInviteExpired = () => {
+        console.log('[OVERLAY] Invite expired');
+        clearOverlay();
+      };
+
+      // CRITICAL: when the room becomes ready, dismiss the overlay
+      // BEFORE App.tsx navigates — otherwise the "MATCH STARTING"
+      // stays visible on top of the game screen.
+      const handleRoomReady = (data: any) => {
+        console.log('[OVERLAY] roomReady — clearing overlay state');
+        clearOverlay();
+      };
+
+      socket.on('inviteReceived', handleInviteReceived);
+      socket.on('inviteAccepted', handleInviteAccepted);
+      socket.on('inviteDeclined', handleInviteDeclined);
+      socket.on('inviteExpired', handleInviteExpired);
+      socket.on('roomReady', handleRoomReady);
+
+      cleanup = () => {
+        socket.off('inviteReceived', handleInviteReceived);
+        socket.off('inviteAccepted', handleInviteAccepted);
+        socket.off('inviteDeclined', handleInviteDeclined);
+        socket.off('inviteExpired', handleInviteExpired);
+        socket.off('roomReady', handleRoomReady);
+      };
+      return true;
+    };
+
+    if (attach()) {
+      return () => {
+        if (cleanup) cleanup();
+      };
     }
 
-    console.log('[OVERLAY] Attached. socket:', socket.id, 'connected:', socket.connected);
-
-    // ─── We are the INVITEE — an invite arrived ───
-    const handleInviteReceived = (data: any) => {
-      console.log('[OVERLAY] Invite received:', data);
-      setInvite({
-        inviteId: data.inviteId,
-        fromName: data.fromName,
-        fromId: data.fromId,
-        battleMode: data.battleMode === 'avatar' ? 'avatar' : 'human',
-      });
-      setCountdown(300);
-      setResponse(null);
-      scale.setValue(0);
-      Animated.spring(scale, {
-        toValue: 1,
-        useNativeDriver: true,
-        damping: 12,
-        stiffness: 150,
-      }).start();
-    };
-
-    // ─── We are the INVITER — they accepted ───
-    const handleInviteAccepted = (data: any) => {
-      console.log('[OVERLAY] Invite accepted:', data);
-
-      // Only show the inviter-side UI. The invitee navigates via roomReady
-      // from App.tsx, so the overlay shouldn't double-handle it.
-      // We detect "am I the inviter?" by comparing identity to the payload.
-      // Server sends playerId = the receiver's socket id for the receiver's event,
-      // and the sender's socket id for the sender's event. So we compare names.
-      const myName = identity?.username;
-      const isInviterSide = myName && data.opponentName === myName;
-
-      if (isInviterSide) {
-        console.log('[OVERLAY] We are inviter — showing MATCH STARTING');
-        setSentState({
-          toName: data.opponentName,
-          status: 'accepted',
-        });
+    // Socket not ready yet — retry every 300ms
+    interval = setInterval(() => {
+      if (attach() && interval) {
+        clearInterval(interval);
+        interval = null;
       }
-      // Invitee side does nothing here — App.tsx handles roomReady navigation
-    };
-
-    // ─── We are the INVITER — they declined ───
-    const handleInviteDeclined = (data: any) => {
-      console.log('[OVERLAY] Invite declined:', data);
-      setSentState((prev) =>
-        prev ? { ...prev, status: 'declined' } : null
-      );
-      // Auto-dismiss the declined toast after 2.5s
-      setTimeout(() => setSentState(null), 2500);
-    };
-
-    const handleInviteExpired = () => {
-      console.log('[OVERLAY] Invite expired');
-      dismiss();
-      setSentState(null);
-    };
-
-    socket.on('inviteReceived', handleInviteReceived);
-    socket.on('inviteAccepted', handleInviteAccepted);
-    socket.on('inviteDeclined', handleInviteDeclined);
-    socket.on('inviteExpired', handleInviteExpired);
+    }, 300);
 
     return () => {
-      socket.off('inviteReceived', handleInviteReceived);
-      socket.off('inviteAccepted', handleInviteAccepted);
-      socket.off('inviteDeclined', handleInviteDeclined);
-      socket.off('inviteExpired', handleInviteExpired);
+      if (interval) clearInterval(interval);
+      if (cleanup) cleanup();
     };
   }, [identity?.username, scale]);
 
-  // ─────────────────────────────────────────────
-  // COUNTDOWN (invitee side)
-  // ─────────────────────────────────────────────
+  // ─── Countdown for invitee popup ───
   useEffect(() => {
     if (!invite || response) return;
-    const interval = setInterval(() => {
+    const i = setInterval(() => {
       setCountdown((c) => {
         if (c <= 1) {
-          clearInterval(interval);
+          clearInterval(i);
           dismiss();
           return 0;
         }
         return c - 1;
       });
     }, 1000);
-    return () => clearInterval(interval);
+    return () => clearInterval(i);
   }, [invite, response]);
 
   const dismiss = () => {
@@ -147,15 +194,16 @@ export default function GlobalInviteOverlay() {
     });
   };
 
-  // ─────────────────────────────────────────────
-  // ACCEPT / DECLINE (invitee side)
-  // ─────────────────────────────────────────────
+  const clearOverlay = () => {
+    setInvite(null);
+    setResponse(null);
+    setSentState(null);
+  };
+
   const handleAccept = () => {
     if (!invite) return;
     console.log('[OVERLAY] Accepting invite');
     setResponse('accepted');
-
-    // Store the mode so screens can read it as a fallback
     setMode(invite.battleMode);
 
     const socket = getSocket();
@@ -163,11 +211,10 @@ export default function GlobalInviteOverlay() {
       socket.emit('respondToInvite', {
         inviteId: invite.inviteId,
         accepted: true,
+        avatarPersonality: buildPersonalityPayload(),
       });
     }
-
-    // Navigation happens from App.tsx when `roomReady` arrives.
-    // Do not navigate here — avoids double-nav.
+    // Navigation happens via App.tsx when roomReady arrives.
   };
 
   const handleDecline = () => {
@@ -184,9 +231,7 @@ export default function GlobalInviteOverlay() {
     setTimeout(dismiss, 400);
   };
 
-  // ─────────────────────────────────────────────
-  // RENDER — INVITER SIDE (waiting / accepted / declined)
-  // ─────────────────────────────────────────────
+  // ─── Render: inviter-side sent state ───
   if (sentState) {
     return (
       <Animated.View
@@ -201,9 +246,7 @@ export default function GlobalInviteOverlay() {
           {sentState.status === 'accepted' && (
             <>
               <Text style={styles.title}>MATCH STARTING</Text>
-              <Text style={styles.subtitle}>
-                {sentState.toName} accepted — entering room...
-              </Text>
+              <Text style={styles.subtitle}>Entering room...</Text>
               <View style={styles.spinner}>
                 <Text style={styles.spinnerText}>⏳</Text>
               </View>
@@ -233,9 +276,7 @@ export default function GlobalInviteOverlay() {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // RENDER — INVITEE SIDE (invite popup)
-  // ─────────────────────────────────────────────
+  // ─── Render: invitee popup ───
   if (!invite) return null;
 
   const formatTime = (sec: number) => {
