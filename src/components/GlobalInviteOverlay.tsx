@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -34,138 +34,160 @@ export default function GlobalInviteOverlay() {
   const { identity } = useUserStore();
   const getSelectedAvatar = useAvatarStore((s) => s.getSelectedAvatar);
 
-  // Personality of the player's currently selected avatar.
-  // Server accepts either the numeric personality object or the string
-  // 'adaptive' fallback — see rps-server/aiEngine.js normalizePersonality().
+  // Refs so handlers always see the latest values without re-running effects
+  const identityRef = useRef(identity);
+  useEffect(() => {
+    identityRef.current = identity;
+  }, [identity]);
+
   const buildPersonalityPayload = () => {
     const avatar = getSelectedAvatar();
     return avatar?.personality ?? 'adaptive';
   };
 
-  // ─── Attach socket listeners, retrying until socket exists ───
+  // ─── Attach listeners to the CURRENT socket. Reattaches on socket swap. ───
   useEffect(() => {
-    let cleanup: (() => void) | null = null;
-    let interval: ReturnType<typeof setInterval> | null = null;
+    let cleanedUp = false;
+    let currentSocket: any = null;
+    const attachedHandlers: Array<[string, (...args: any[]) => void]> = [];
 
-    const attach = () => {
+    const detachAll = () => {
+      if (!currentSocket) return;
+      attachedHandlers.forEach(([ev, fn]) => {
+        currentSocket.off(ev, fn);
+      });
+      attachedHandlers.length = 0;
+    };
+
+    const handleInviteReceived = (data: any) => {
+      console.log('[OVERLAY] Invite received:', data);
+      setInvite({
+        inviteId: data.inviteId,
+        fromName: data.fromName,
+        fromId: data.fromId,
+        battleMode: data.battleMode === 'avatar' ? 'avatar' : 'human',
+      });
+      setCountdown(300);
+      setResponse(null);
+      scale.setValue(0);
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 12,
+        stiffness: 150,
+      }).start();
+    };
+
+    const handleInviteAccepted = (data: any) => {
+      console.log('[OVERLAY] Invite accepted event:', data);
+      const myName = identityRef.current?.username;
+      const iAmInviter = myName && data.opponentName === myName;
+
+      if (iAmInviter) {
+        console.log('[OVERLAY] Showing MATCH STARTING (inviter side)');
+        setSentState({ toName: data.opponentName, status: 'accepted' });
+        scale.setValue(0);
+        Animated.spring(scale, {
+          toValue: 1,
+          useNativeDriver: true,
+          damping: 12,
+          stiffness: 150,
+        }).start();
+      }
+    };
+
+    const handleInviteDeclined = (data: any) => {
+      console.log('[OVERLAY] Invite declined:', data);
+      const who = data?.byName || 'Player';
+      setSentState({ toName: who, status: 'declined' });
+      setResponse('declined');
+      scale.setValue(0);
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        damping: 12,
+        stiffness: 150,
+      }).start();
+      setTimeout(() => clearOverlay(), 2500);
+    };
+
+    const handleInviteExpired = () => {
+      console.log('[OVERLAY] Invite expired');
+      clearOverlay();
+    };
+
+    const handleRoomReady = () => {
+      console.log('[OVERLAY] roomReady — clearing overlay state');
+      clearOverlay();
+    };
+
+    const attachTo = (socket: any) => {
+      if (!socket || cleanedUp) return;
+      // If already attached to this exact socket, don't double-attach
+      if (currentSocket === socket && attachedHandlers.length > 0) return;
+
+      detachAll();
+      currentSocket = socket;
+
+      const bindings: Array<[string, (...args: any[]) => void]> = [
+        ['inviteReceived', handleInviteReceived],
+        ['inviteAccepted', handleInviteAccepted],
+        ['inviteDeclined', handleInviteDeclined],
+        ['inviteExpired', handleInviteExpired],
+        ['roomReady', handleRoomReady],
+      ];
+      bindings.forEach(([ev, fn]) => {
+        socket.on(ev, fn);
+        attachedHandlers.push([ev, fn]);
+      });
+
+      console.log('[OVERLAY] Attached listeners. socket:', socket.id);
+    };
+
+    // Poll for the socket every 250ms until it exists, then keep watching
+    // for socket swaps via the `connect` event.
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let connectHandler: (() => void) | null = null;
+
+    const tryAttach = () => {
+      if (cleanedUp) return true;
       const socket = getSocket();
       if (!socket) return false;
 
-      console.log('[OVERLAY] Attached listeners. socket:', socket.id);
+      attachTo(socket);
 
-      const handleInviteReceived = (data: any) => {
-        console.log('[OVERLAY] Invite received:', data);
-        setInvite({
-          inviteId: data.inviteId,
-          fromName: data.fromName,
-          fromId: data.fromId,
-          battleMode: data.battleMode === 'avatar' ? 'avatar' : 'human',
-        });
-        setCountdown(300);
-        setResponse(null);
-        scale.setValue(0);
-        Animated.spring(scale, {
-          toValue: 1,
-          useNativeDriver: true,
-          damping: 12,
-          stiffness: 150,
-        }).start();
+      // Watch for future reconnect / session-replaced on this socket
+      if (connectHandler && currentSocket) {
+        currentSocket.off('connect', connectHandler);
+      }
+      connectHandler = () => {
+        console.log('[OVERLAY] Socket reconnect detected — reattaching');
+        attachTo(getSocket());
       };
+      socket.on('connect', connectHandler);
 
-      const handleInviteAccepted = (data: any) => {
-        console.log('[OVERLAY] Invite accepted event:', data);
-
-        // Determine if we're the inviter or invitee.
-        // The server sends the event to BOTH sides.
-        //   - Inviter receives: opponentName = invitee's name
-        //   - Invitee receives: opponentName = inviter's name
-        const myName = identity?.username;
-        const iAmInviter = myName && data.opponentName === myName;
-
-        if (iAmInviter) {
-          console.log('[OVERLAY] Showing MATCH STARTING (inviter side)');
-          setSentState({
-            toName: data.opponentName,
-            status: 'accepted',
-          });
-          scale.setValue(0);
-          Animated.spring(scale, {
-            toValue: 1,
-            useNativeDriver: true,
-            damping: 12,
-            stiffness: 150,
-          }).start();
-        } else {
-          // Invitee — the invite popup is already showing its own
-          // "MATCH STARTING" state via the `response` flag. Nothing to do.
-        }
-      };
-
-      const handleInviteDeclined = (data: any) => {
-        console.log('[OVERLAY] Invite declined:', data);
-        const who = data?.byName || 'Player';
-        setSentState({ toName: who, status: 'declined' });
-        setResponse('declined');
-        scale.setValue(0);
-        Animated.spring(scale, {
-          toValue: 1,
-          useNativeDriver: true,
-          damping: 12,
-          stiffness: 150,
-        }).start();
-        setTimeout(() => {
-          clearOverlay();
-        }, 2500);
-      };
-
-      const handleInviteExpired = () => {
-        console.log('[OVERLAY] Invite expired');
-        clearOverlay();
-      };
-
-      // CRITICAL: when the room becomes ready, dismiss the overlay
-      // BEFORE App.tsx navigates — otherwise the "MATCH STARTING"
-      // stays visible on top of the game screen.
-      const handleRoomReady = (data: any) => {
-        console.log('[OVERLAY] roomReady — clearing overlay state');
-        clearOverlay();
-      };
-
-      socket.on('inviteReceived', handleInviteReceived);
-      socket.on('inviteAccepted', handleInviteAccepted);
-      socket.on('inviteDeclined', handleInviteDeclined);
-      socket.on('inviteExpired', handleInviteExpired);
-      socket.on('roomReady', handleRoomReady);
-
-      cleanup = () => {
-        socket.off('inviteReceived', handleInviteReceived);
-        socket.off('inviteAccepted', handleInviteAccepted);
-        socket.off('inviteDeclined', handleInviteDeclined);
-        socket.off('inviteExpired', handleInviteExpired);
-        socket.off('roomReady', handleRoomReady);
-      };
       return true;
     };
 
-    if (attach()) {
-      return () => {
-        if (cleanup) cleanup();
-      };
+    if (!tryAttach()) {
+      interval = setInterval(() => {
+        if (tryAttach() && interval) {
+          clearInterval(interval);
+          interval = null;
+        }
+      }, 250);
     }
 
-    // Socket not ready yet — retry every 300ms
-    interval = setInterval(() => {
-      if (attach() && interval) {
-        clearInterval(interval);
-        interval = null;
-      }
-    }, 300);
-
     return () => {
+      cleanedUp = true;
       if (interval) clearInterval(interval);
-      if (cleanup) cleanup();
+      if (currentSocket && connectHandler) {
+        currentSocket.off('connect', connectHandler);
+      }
+      detachAll();
+      currentSocket = null;
     };
-  }, [identity?.username, scale]);
+  }, [scale]);
 
   // ─── Countdown for invitee popup ───
   useEffect(() => {
@@ -214,7 +236,6 @@ export default function GlobalInviteOverlay() {
         avatarPersonality: buildPersonalityPayload(),
       });
     }
-    // Navigation happens via App.tsx when roomReady arrives.
   };
 
   const handleDecline = () => {
@@ -231,7 +252,6 @@ export default function GlobalInviteOverlay() {
     setTimeout(dismiss, 400);
   };
 
-  // ─── Render: inviter-side sent state ───
   if (sentState) {
     return (
       <Animated.View
@@ -265,7 +285,9 @@ export default function GlobalInviteOverlay() {
           {sentState.status === 'pending' && (
             <>
               <Text style={styles.title}>INVITE SENT</Text>
-              <Text style={styles.subtitle}>Waiting for {sentState.toName}...</Text>
+              <Text style={styles.subtitle}>
+                Waiting for {sentState.toName}...
+              </Text>
               <View style={styles.spinner}>
                 <Text style={styles.spinnerText}>⏳</Text>
               </View>
@@ -276,7 +298,6 @@ export default function GlobalInviteOverlay() {
     );
   }
 
-  // ─── Render: invitee popup ───
   if (!invite) return null;
 
   const formatTime = (sec: number) => {

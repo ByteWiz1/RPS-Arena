@@ -24,6 +24,9 @@ import SpaceBackground from '../components/SpaceBackground';
 import FloatingPanel from '../components/FloatingPanel';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
+import NotificationBell from '../components/notificationBell';
+import HomeStatsCard from '../components/HomeStatsCard';
+import GuestBanner from '../components/GuestBanner';
 import { SPACE_ACCENTS, COSMIC_THEME } from '../theme/spaceColors';
 import { startMenuMusic } from '../services/audio';
 import { useAvatarStore } from '../store/avatarStore';
@@ -137,6 +140,8 @@ export default function HomeScreen() {
 
   const content = (
     <>
+    <GuestBanner />
+    
       {loaded && avatar && (
         <TouchableOpacity
           style={styles.streakBar}
@@ -190,6 +195,9 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
       )}
+
+      {/* Feature A (Chat 8) — server-backed quick stats card */}
+      <HomeStatsCard accent="#a78bfa" />
 
       {!premium && (
         <TouchableOpacity
@@ -245,6 +253,7 @@ export default function HomeScreen() {
                 <Text style={styles.premiumBadgeText}>PRO</Text>
               </View>
             )}
+            <NotificationBell />
             <TouchableOpacity
               style={styles.settingsButton}
               onPress={() => navigation.navigate('Settings')}

@@ -1,3 +1,20 @@
+// src/screens/SettingsScreen.tsx
+//
+// RPS Arena — settings (Chat 9 Account section rewrite).
+//
+// Chat 9 changes:
+//   - Account section branches on anonymous vs linked.
+//   - Anonymous: prominent "Save your progress" CTA + "Already have
+//     an account?" login link.
+//   - Linked: "Signed in as <email>", "Log out", "Forgot password".
+//   - Both: Username row, Premium row (read-only), View My Stats.
+//   - Log out and Delete Account trigger a full page reload on web
+//     so App.tsx re-bootstraps with a fresh anonymous session.
+//   - Delete Account: server now also deletes auth.users (via
+//     db.deleteUserEverywhere). clearUser() signs out Supabase.
+//   - Everything else (audio, feedback, danger zone, about, modals)
+//     is byte-for-byte the same as before.
+
 import React, { useEffect, useState } from 'react';
 import {
   View,
@@ -27,6 +44,10 @@ import {
   AlertTriangle,
   BarChart3,
   ChevronRight,
+  Mail,
+  LogOut,
+  Crown,
+  ShieldCheck,
 } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSettingsStore } from '../store/settingsStore';
@@ -51,7 +72,14 @@ export default function SettingsScreen() {
     toggleVibration,
   } = useSettingsStore();
 
-  const { identity, updateUser, clearUser } = useUserStore();
+  const {
+    identity,
+    updateUser,
+    clearUser,
+    email,
+    isAnonymous,
+    isPremium,
+  } = useUserStore();
 
   // ─── Change username state ───
   const [usernameModalVisible, setUsernameModalVisible] = useState(false);
@@ -64,12 +92,15 @@ export default function SettingsScreen() {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deleting, setDeleting] = useState(false);
 
+  // ─── Logout state ───
+  const [loggingOut, setLoggingOut] = useState(false);
+
   useEffect(() => {
     startMenuMusic();
   }, []);
 
   // ─────────────────────────────────────────────────────────
-  // RESET ALL PROGRESS (existing)
+  // RESET ALL PROGRESS
   // ─────────────────────────────────────────────────────────
   const handleReset = () => {
     showAlert(
@@ -91,7 +122,6 @@ export default function SettingsScreen() {
 
   // ─────────────────────────────────────────────────────────
   // CHANGE USERNAME
-  // Server resolves the caller via the socket's token — no userId sent.
   // ─────────────────────────────────────────────────────────
   const openUsernameModal = () => {
     setNewUsername(identity?.username || '');
@@ -133,8 +163,6 @@ export default function SettingsScreen() {
     setUsernameError(null);
 
     try {
-      // Tell server first (so it can reject duplicates).
-      // Server identifies the caller via the socket token — no userId arg.
       const result = await changeUsernameOnServer(trimmed);
 
       if (!result.success) {
@@ -143,7 +171,6 @@ export default function SettingsScreen() {
         return;
       }
 
-      // Persist locally using the (possibly normalized) server response.
       const finalUsername = result.username || trimmed;
       await updateUser({ username: finalUsername });
 
@@ -157,8 +184,44 @@ export default function SettingsScreen() {
   };
 
   // ─────────────────────────────────────────────────────────
+  // LOG OUT
+  //
+  // clearUser() signs out Supabase + wipes the @rps_identity cache.
+  // Then we do a full page reload on web so App.tsx re-bootstraps
+  // with a fresh anonymous session. On native, we navigate home —
+  // a follow-up chat can wire expo-updates for a true reload.
+  // ─────────────────────────────────────────────────────────
+  const handleLogout = () => {
+    showAlert(
+      'Log out?',
+      'You will be signed out on this device. Your account stays saved.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Log out',
+          style: 'destructive',
+          onPress: async () => {
+            setLoggingOut(true);
+            try {
+              await clearUser();
+            } catch {}
+            setLoggingOut(false);
+
+            if (Platform.OS === 'web') {
+              try {
+                (globalThis as any).location?.reload?.();
+              } catch {}
+            } else {
+              navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ─────────────────────────────────────────────────────────
   // DELETE ACCOUNT
-  // Server resolves the caller via the socket token.
   // ─────────────────────────────────────────────────────────
   const openDeleteModal = () => {
     setDeleteConfirmText('');
@@ -177,24 +240,26 @@ export default function SettingsScreen() {
     setDeleting(true);
 
     try {
-      // 1. Tell server (best-effort). Server wipes userAccounts +
-      //    accountsByUserId + matchHistory + playerStats for this userId.
+      // 1. Tell server. Server wipes public.users (cascades stats/
+      //    history/achievements) AND auth.users (cascades profiles).
       await deleteAccountOnServer();
 
-      // 2. Wipe local identity (clears @rps_identity)
+      // 2. Wipe local identity + sign out Supabase.
       await clearUser();
 
-      // 3. Wipe everything else local
+      // 3. Wipe everything else local.
       await AsyncStorage.clear();
 
       setDeleting(false);
       setDeleteModalVisible(false);
 
-      // 4. Bounce to root — will land on onboarding since identity is gone
-      navigation.reset({
-        index: 0,
-        routes: [{ name: 'Home' }],
-      });
+      if (Platform.OS === 'web') {
+        try {
+          (globalThis as any).location?.reload?.();
+        } catch {}
+      } else {
+        navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+      }
     } catch (e) {
       setDeleting(false);
       showAlert('Error', 'Could not delete account. Try again.');
@@ -202,6 +267,7 @@ export default function SettingsScreen() {
   };
 
   const deleteReady = deleteConfirmText.trim().toUpperCase() === 'DELETE';
+  const linked = !isAnonymous && !!email;
 
   return (
     <ScreenContainer>
@@ -218,9 +284,42 @@ export default function SettingsScreen() {
         </View>
 
         <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
-          {/* ─── ACCOUNT SECTION ─── */}
+          {/* ─── ACCOUNT ─── */}
           <Text style={styles.sectionLabel}>Account</Text>
 
+          {/* Anonymous: prominent Save progress CTA */}
+          {!linked && (
+            <TouchableOpacity
+              style={styles.saveCard}
+              onPress={() => navigation.navigate('SignupLink')}
+            >
+              <View style={styles.saveIconWrap}>
+                <ShieldCheck size={22} color="#4facfe" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.saveTitle}>Save your progress</Text>
+                <Text style={styles.saveSubtitle}>
+                  Link an email to keep your stats forever
+                </Text>
+              </View>
+              <ChevronRight size={20} color="#4facfe" />
+            </TouchableOpacity>
+          )}
+
+          {/* Linked: signed in as */}
+          {linked && (
+            <View style={styles.settingItem}>
+              <View style={styles.settingLeft}>
+                <Mail size={20} color="#4ade80" />
+                <View>
+                  <Text style={styles.settingLabelSwitch}>Signed in as</Text>
+                  <Text style={styles.settingSubValue}>{email}</Text>
+                </View>
+              </View>
+            </View>
+          )}
+
+          {/* Username — both modes */}
           <TouchableOpacity
             style={styles.settingItem}
             onPress={openUsernameModal}
@@ -237,7 +336,25 @@ export default function SettingsScreen() {
             <Edit3 size={18} color="#5a5a7a" />
           </TouchableOpacity>
 
-          {/* ─── VIEW MY STATS (new) ─── */}
+          {/* Premium status */}
+          <View style={styles.settingItem}>
+            <View style={styles.settingLeft}>
+              <Crown size={20} color={isPremium ? '#fbbf24' : '#5a5a7a'} />
+              <View>
+                <Text style={styles.settingLabelSwitch}>Premium</Text>
+                <Text style={styles.settingSubValue}>
+                  {isPremium ? 'Active' : 'Free account'}
+                </Text>
+              </View>
+            </View>
+            {!isPremium && (
+              <TouchableOpacity onPress={() => navigation.navigate('Premium')}>
+                <Text style={styles.upgradeLink}>Upgrade</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* View My Stats */}
           <TouchableOpacity
             style={styles.settingItem}
             onPress={() => navigation.navigate('Profile')}
@@ -254,7 +371,56 @@ export default function SettingsScreen() {
             <ChevronRight size={18} color="#5a5a7a" />
           </TouchableOpacity>
 
-          {/* ─── AUDIO SECTION ─── */}
+          {/* Linked: forgot password */}
+          {linked && (
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => navigation.navigate('ForgotPassword')}
+            >
+              <View style={styles.settingLeft}>
+                <Mail size={20} color="#5a5a7a" />
+                <Text style={styles.settingLabelSwitch}>Forgot password</Text>
+              </View>
+              <ChevronRight size={18} color="#5a5a7a" />
+            </TouchableOpacity>
+          )}
+
+          {/* Linked: log out */}
+          {linked && (
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={handleLogout}
+              disabled={loggingOut}
+            >
+              <View style={styles.settingLeft}>
+                <LogOut size={20} color="#f87171" />
+                <Text style={[styles.settingLabelSwitch, { color: '#f87171' }]}>
+                  Log out
+                </Text>
+              </View>
+              {loggingOut && (
+                <ActivityIndicator color="#f87171" size="small" />
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* Anonymous: already have an account? */}
+          {!linked && (
+            <TouchableOpacity
+              style={styles.settingItem}
+              onPress={() => navigation.navigate('Login')}
+            >
+              <View style={styles.settingLeft}>
+                <Mail size={20} color="#5a5a7a" />
+                <Text style={styles.settingLabelSwitch}>
+                  Already have an account?
+                </Text>
+              </View>
+              <ChevronRight size={18} color="#5a5a7a" />
+            </TouchableOpacity>
+          )}
+
+          {/* ─── AUDIO ─── */}
           <Text style={styles.sectionLabel}>Audio</Text>
 
           <View style={styles.settingCard}>
@@ -303,7 +469,7 @@ export default function SettingsScreen() {
             </Text>
           </View>
 
-          {/* ─── FEEDBACK SECTION ─── */}
+          {/* ─── FEEDBACK ─── */}
           <Text style={styles.sectionLabel}>Feedback</Text>
 
           <View style={styles.settingItem}>
@@ -346,9 +512,7 @@ export default function SettingsScreen() {
           </View>
         </ScreenScroll>
 
-        {/* ═══════════════════════════════════════════════════ */}
-        {/* CHANGE USERNAME MODAL                              */}
-        {/* ═══════════════════════════════════════════════════ */}
+        {/* CHANGE USERNAME MODAL */}
         <Modal
           visible={usernameModalVisible}
           transparent
@@ -421,9 +585,7 @@ export default function SettingsScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* ═══════════════════════════════════════════════════ */}
-        {/* DELETE ACCOUNT MODAL                               */}
-        {/* ═══════════════════════════════════════════════════ */}
+        {/* DELETE ACCOUNT MODAL */}
         <Modal
           visible={deleteModalVisible}
           transparent
@@ -527,6 +689,39 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
 
+  saveCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(79, 172, 254, 0.08)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(79, 172, 254, 0.25)',
+  },
+  saveIconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(79, 172, 254, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  saveTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  saveSubtitle: { color: '#7a7a9a', fontSize: 12 },
+
+  upgradeLink: {
+    color: '#fbbf24',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+
   settingCard: {
     backgroundColor: 'rgba(255,255,255,0.03)',
     borderRadius: 12,
@@ -605,7 +800,6 @@ const styles = StyleSheet.create({
   aboutVersion: { fontSize: 14, color: '#5a5a7a', marginTop: 4 },
   aboutText: { fontSize: 14, color: '#5a5a7a', marginTop: 4 },
 
-  // ─── Modals ───
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.7)',

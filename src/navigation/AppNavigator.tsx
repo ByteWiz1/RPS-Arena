@@ -1,3 +1,15 @@
+// src/navigation/AppNavigator.tsx
+//
+// RPS Arena — navigation (Chat 9 — register auth screens).
+//
+// Chat 9 adds four screens:
+//   Login            — email + password sign-in (new device)
+//   SignupLink       — link email + password to anonymous account
+//   ForgotPassword   — request reset link
+//   ResetPassword    — set new password after recovery
+//
+// All other screens are registered exactly as before.
+
 import React from 'react';
 import {
   NavigationContainer,
@@ -21,6 +33,14 @@ import ChooseOpponentScreen from '../screens/ChooseOpponentScreen';
 import AISettingsScreen from '../screens/AISettingsScreen';
 import AvatarImageScreen from '../screens/AvatarImageScreen';
 import OnlineModeScreen from '../screens/OnlineModeScreen';
+import NotificationsScreen from '../screens/notificationsScreen';
+import AchievementsScreen from '../screens/AchievementsScreen';
+
+// Chat 9 — new screens
+import LoginScreen from '../screens/LoginScreen';
+import SignupLinkScreen from '../screens/SignupLinkScreen';
+import ForgotPasswordScreen from '../screens/ForgotPasswordScreen';
+import ResetPasswordScreen from '../screens/ResetPasswordScreen';
 
 export type RootStackParamList = {
   Home: undefined;
@@ -48,6 +68,14 @@ export type RootStackParamList = {
   ChooseOpponent: undefined;
   AISettings: undefined;
   AvatarImage: any;
+  Notifications: undefined;
+  Achievements: undefined;
+
+  // Chat 9
+  Login: undefined;
+  SignupLink: undefined;
+  ForgotPassword: undefined;
+  ResetPassword: undefined;
 };
 
 const Stack = createStackNavigator<RootStackParamList>();
@@ -81,6 +109,14 @@ export default function AppNavigator() {
         <Stack.Screen name="ChooseOpponent" component={ChooseOpponentScreen} />
         <Stack.Screen name="AISettings" component={AISettingsScreen} />
         <Stack.Screen name="AvatarImage" component={AvatarImageScreen} />
+        <Stack.Screen name="Notifications" component={NotificationsScreen} />
+        <Stack.Screen name="Achievements" component={AchievementsScreen} />
+
+        {/* Chat 9 — auth screens */}
+        <Stack.Screen name="Login" component={LoginScreen} />
+        <Stack.Screen name="SignupLink" component={SignupLinkScreen} />
+        <Stack.Screen name="ForgotPassword" component={ForgotPasswordScreen} />
+        <Stack.Screen name="ResetPassword" component={ResetPasswordScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

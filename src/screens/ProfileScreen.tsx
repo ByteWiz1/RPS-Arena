@@ -10,7 +10,11 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation, useFocusEffect } from '@react-navigation/native';
+import {
+  useNavigation,
+  useFocusEffect,
+  useRoute,
+} from '@react-navigation/native';
 import {
   ChevronLeft,
   Plus,
@@ -20,6 +24,8 @@ import {
   Bot,
   Trophy,
   RefreshCw,
+  Award,
+  ChevronRight,
 } from 'lucide-react-native';
 
 import { useAvatarStore } from '../store/avatarStore';
@@ -29,6 +35,8 @@ import { startMenuMusic } from '../services/audio';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
 import { showAlert } from '../utils/alert';
+import { useAchievementStore } from '../store/achievementStore';
+import MatchDetailModal from '../components/MatchDetailModal';
 
 import {
   getPlayerStatsFromServer,
@@ -47,7 +55,7 @@ import StatCard from '../components/StatCard';
 import MatchHistoryRow from '../components/MatchHistoryRow';
 import LeaderboardRow from '../components/LeaderboardRow';
 
-type TabKey = 'stats' | 'history' | 'avatars' | 'leaderboard';
+type TabKey = 'stats' | 'history' | 'avatars' | 'leaderboard' | 'achievements';
 type LeaderboardSubTab = 'wins' | 'winRate' | 'streak';
 
 const TABS: { key: TabKey; label: string }[] = [
@@ -55,11 +63,33 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'history', label: 'History' },
   { key: 'avatars', label: 'Avatars' },
   { key: 'leaderboard', label: 'Leaderboard' },
+  { key: 'achievements', label: 'Awards' },
 ];
 
 export default function ProfileScreen() {
   const navigation = useNavigation<any>();
-  const [activeTab, setActiveTab] = useState<TabKey>('stats');
+  const route = useRoute<any>();
+
+  // Feature A (Chat 8) — HomeStatsCard navigates here with
+  // { initialTab: 'stats' }. Default remains 'stats' so existing
+  // navigation (from anywhere else) is unchanged.
+  const initialTab: TabKey =
+    route?.params?.initialTab &&
+    TABS.some((t) => t.key === route.params.initialTab)
+      ? (route.params.initialTab as TabKey)
+      : 'stats';
+
+  const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
+
+  // If the screen is already mounted and something re-navigates with a new
+  // initialTab param, honor it. No-op when the param is absent (the common
+  // case for back-navigation).
+  useEffect(() => {
+    const p = route?.params?.initialTab;
+    if (p && TABS.some((t) => t.key === p)) {
+      setActiveTab(p as TabKey);
+    }
+  }, [route?.params?.initialTab]);
 
   useEffect(() => {
     startMenuMusic();
@@ -107,6 +137,7 @@ export default function ProfileScreen() {
         {activeTab === 'history' && <HistoryTab />}
         {activeTab === 'avatars' && <AvatarsTab />}
         {activeTab === 'leaderboard' && <LeaderboardTab />}
+        {activeTab === 'achievements' && <AchievementsTab />}
       </SafeAreaView>
     </ScreenContainer>
   );
@@ -325,11 +356,18 @@ function ModeBreakdownCard({
 
 /* ============================================================
  * TAB 2 — HISTORY
+ *
+ * Feature B (Chat 8): each row is now wrapped in a TouchableOpacity
+ * that opens MatchDetailModal with the tapped record.
  * ============================================================ */
 function HistoryTab() {
   const [matches, setMatches] = useState<ServerMatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const [selectedMatch, setSelectedMatch] = useState<ServerMatchRecord | null>(
+    null
+  );
 
   const fetchHistory = useCallback(async () => {
     setRefreshing(true);
@@ -352,46 +390,60 @@ function HistoryTab() {
     }, [fetchHistory])
   );
 
-  return (
-    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
-      <View style={styles.tabSectionHeader}>
-        <Text style={styles.tabSectionTitle}>Recent Matches</Text>
-        <TouchableOpacity
-          style={styles.refreshButton}
-          onPress={fetchHistory}
-          disabled={refreshing}
-          activeOpacity={0.8}
-        >
-          <RefreshCw
-            size={14}
-            color={refreshing ? '#3a3a4a' : '#8a8a9a'}
-          />
-          <Text style={styles.refreshButtonText}>
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </Text>
-        </TouchableOpacity>
-      </View>
+  const openDetail = (m: ServerMatchRecord) => setSelectedMatch(m);
+  const closeDetail = () => setSelectedMatch(null);
 
-      {loading ? (
-        <View style={styles.loadingBlock}>
-          <ActivityIndicator color="#e94560" />
-          <Text style={styles.loadingText}>Loading history…</Text>
+  return (
+    <>
+      <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
+        <View style={styles.tabSectionHeader}>
+          <Text style={styles.tabSectionTitle}>Recent Matches</Text>
+          <TouchableOpacity
+            style={styles.refreshButton}
+            onPress={fetchHistory}
+            disabled={refreshing}
+            activeOpacity={0.8}
+          >
+            <RefreshCw
+              size={14}
+              color={refreshing ? '#3a3a4a' : '#8a8a9a'}
+            />
+            <Text style={styles.refreshButtonText}>
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </Text>
+          </TouchableOpacity>
         </View>
-      ) : matches.length === 0 ? (
-        <View style={styles.emptyBlock}>
-          <Text style={styles.emptyEmoji}>📜</Text>
-          <Text style={styles.emptyTitle}>No matches yet</Text>
-          <Text style={styles.emptyText}>Play one!</Text>
-        </View>
-      ) : (
-        matches.map((m, idx) => (
-          <MatchHistoryRow
-            key={`${m.timestamp}-${idx}`}
-            match={m}
-          />
-        ))
-      )}
-    </ScreenScroll>
+
+        {loading ? (
+          <View style={styles.loadingBlock}>
+            <ActivityIndicator color="#e94560" />
+            <Text style={styles.loadingText}>Loading history…</Text>
+          </View>
+        ) : matches.length === 0 ? (
+          <View style={styles.emptyBlock}>
+            <Text style={styles.emptyEmoji}>📜</Text>
+            <Text style={styles.emptyTitle}>No matches yet</Text>
+            <Text style={styles.emptyText}>Play one!</Text>
+          </View>
+        ) : (
+          matches.map((m, idx) => (
+            <TouchableOpacity
+              key={`${m.timestamp}-${idx}`}
+              onPress={() => openDetail(m)}
+              activeOpacity={0.75}
+            >
+              <MatchHistoryRow match={m} />
+            </TouchableOpacity>
+          ))
+        )}
+      </ScreenScroll>
+
+      <MatchDetailModal
+        visible={selectedMatch !== null}
+        match={selectedMatch}
+        onClose={closeDetail}
+      />
+    </>
   );
 }
 
@@ -686,6 +738,137 @@ function LeaderboardTab() {
           />
         ))
       )}
+    </ScreenScroll>
+  );
+}
+
+/* ============================================================
+ * TAB 5 — ACHIEVEMENTS
+ *
+ * Compact summary of progress toward the 25 achievements. The full
+ * badge grid lives on AchievementsScreen (registered in AppNavigator);
+ * this tab shows the count, a progress bar, the most recent unlocks,
+ * and a "View All Achievements" button that navigates there.
+ * ============================================================ */
+function AchievementsTab() {
+  const navigation = useNavigation<any>();
+  const {
+    catalog,
+    unlockedIds,
+    catalogLoaded,
+    loadCatalog,
+    loadUnlocked,
+  } = useAchievementStore();
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchAll = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadCatalog(), loadUnlocked()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadCatalog, loadUnlocked]);
+
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadUnlocked();
+    }, [loadUnlocked])
+  );
+
+  const total = catalog.length || 25;
+  const unlockedCount = catalog.length
+    ? catalog.reduce((n, a) => (unlockedIds[a.id] ? n + 1 : n), 0)
+    : Object.keys(unlockedIds).length;
+  const progress = total > 0 ? unlockedCount / total : 0;
+
+  // Most recent unlocks, newest first.
+  const recentUnlocks = useMemo(() => {
+    if (!catalog.length) return [];
+    return catalog
+      .filter((a) => !!unlockedIds[a.id])
+      .sort((a, b) => (unlockedIds[b.id] || 0) - (unlockedIds[a.id] || 0))
+      .slice(0, 3);
+  }, [catalog, unlockedIds]);
+
+  return (
+    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
+      {/* Progress card */}
+      <View style={styles.achievementsCard}>
+        <View style={styles.achievementsCardHeader}>
+          <Award size={20} color="#e94560" />
+          <Text style={styles.achievementsCardLabel}>Progress</Text>
+          <TouchableOpacity
+            style={styles.refreshIconButton}
+            onPress={fetchAll}
+            disabled={refreshing}
+          >
+            <RefreshCw
+              size={14}
+              color={refreshing ? '#3a3a4a' : '#8a8a9a'}
+            />
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.achievementsCount}>
+          {unlockedCount}
+          <Text style={styles.achievementsCountTotal}> / {total}</Text>
+        </Text>
+
+        <View style={styles.achievementsProgressTrack}>
+          <View
+            style={[
+              styles.achievementsProgressFill,
+              { width: `${Math.round(progress * 100)}%` },
+            ]}
+          />
+        </View>
+
+        <Text style={styles.achievementsHint}>
+          {!catalogLoaded
+            ? 'Loading…'
+            : unlockedCount === 0
+            ? 'Win your first match to unlock your first badge'
+            : unlockedCount === total
+            ? 'All achievements unlocked 🎉'
+            : `${total - unlockedCount} remaining`}
+        </Text>
+      </View>
+
+      {/* Recent unlocks */}
+      {recentUnlocks.length > 0 && (
+        <>
+          <Text style={styles.sectionLabel}>Recent Unlocks</Text>
+          {recentUnlocks.map((a) => (
+            <View key={a.id} style={styles.recentUnlockRow}>
+              <Text style={styles.recentUnlockIcon}>{a.icon}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.recentUnlockName} numberOfLines={1}>
+                  {a.name}
+                </Text>
+                <Text style={styles.recentUnlockDesc} numberOfLines={1}>
+                  {a.description}
+                </Text>
+              </View>
+            </View>
+          ))}
+        </>
+      )}
+
+      {/* View all button */}
+      <TouchableOpacity
+        style={styles.viewAllButton}
+        onPress={() => navigation.navigate('Achievements')}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.viewAllButtonText}>View All Achievements</Text>
+        <ChevronRight size={18} color="#ffffff" />
+      </TouchableOpacity>
     </ScreenScroll>
   );
 }
@@ -1027,4 +1210,84 @@ const styles = StyleSheet.create({
   },
   subTabText: { fontSize: 11, fontWeight: '700', color: '#8a8a9a' },
   subTabTextActive: { color: '#4facfe' },
+
+  // ─── Achievements tab (Chat 7) ───
+  achievementsCard: {
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: 'rgba(233,69,96,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(233,69,96,0.2)',
+    marginBottom: 18,
+  },
+  achievementsCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  achievementsCardLabel: {
+    flex: 1,
+    fontSize: 11,
+    color: '#e94560',
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  achievementsCount: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginTop: 8,
+  },
+  achievementsCountTotal: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#8a8a9a',
+  },
+  achievementsProgressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    marginTop: 12,
+    overflow: 'hidden',
+  },
+  achievementsProgressFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#e94560',
+  },
+  achievementsHint: {
+    fontSize: 11,
+    color: '#8a8a9a',
+    marginTop: 8,
+  },
+  recentUnlockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: 'rgba(74,222,128,0.06)',
+    borderWidth: 1,
+    borderColor: 'rgba(74,222,128,0.25)',
+    marginBottom: 8,
+    gap: 12,
+  },
+  recentUnlockIcon: { fontSize: 26 },
+  recentUnlockName: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+  recentUnlockDesc: { fontSize: 12, color: '#a8a8b8', marginTop: 2 },
+  viewAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: '#e94560',
+    marginTop: 16,
+  },
+  viewAllButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
 });

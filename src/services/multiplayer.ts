@@ -1,29 +1,38 @@
+// src/services/multiplayer.ts
+//
+// RPS Arena — Socket.IO client.
+//
+// Chat 9: JWT-at-handshake, identify, migrateLegacyToken.
+// Chat 9b:
+//   - Avatar event wrappers (get/create/update/delete/select).
+//   - onAvatarsUpdate subscription.
+//   - reconnectWithFreshJWT() helper for post-login / post-link.
+//   - Client log before changeUsername emit (Bug 3 instrumentation).
+
 import { io, Socket } from 'socket.io-client';
 import { UserIdentity } from './identity';
 
 let socket: Socket | null = null;
 const SERVER_URL = 'https://rps-arena-server-2mxh.onrender.com';
 
-/**
- * Connect to the server.
- *
- * If `identity` is provided AND we are establishing a brand-new socket,
- * the identity will be auto-registered on connect (fire-and-forget).
- * Pass `null` / omit `identity` if you intend to drive registration
- * yourself via `registerOrRestoreIdentity` (recommended at app startup).
- */
-export function connectToServer(identity?: UserIdentity | null): Promise<Socket> {
+// ────────────────────────────────────────────────────────────
+// Connection
+// ────────────────────────────────────────────────────────────
+export function connectToServer(
+  getToken: () => Promise<string | null>
+): Promise<Socket> {
   return new Promise((resolve, reject) => {
     if (socket?.connected) {
-      if (identity && (identity.token || identity.username)) {
-        socket.emit('registerIdentity', {
-          token: identity.token || null,
-          username: identity.username || undefined,
-          avatar: identity.avatar || undefined,
-        });
-      }
       resolve(socket);
       return;
+    }
+
+    if (socket) {
+      try {
+        socket.removeAllListeners();
+        socket.disconnect();
+      } catch {}
+      socket = null;
     }
 
     socket = io(SERVER_URL, {
@@ -32,16 +41,14 @@ export function connectToServer(identity?: UserIdentity | null): Promise<Socket>
       reconnectionAttempts: 10,
       reconnectionDelay: 2000,
       timeout: 60000,
+      auth: (cb: (data: { token: string | null }) => void) => {
+        getToken()
+          .then((token) => cb({ token: token || null }))
+          .catch(() => cb({ token: null }));
+      },
     });
 
     socket.on('connect', () => {
-      if (identity && (identity.token || identity.username)) {
-        socket!.emit('registerIdentity', {
-          token: identity.token || null,
-          username: identity.username || undefined,
-          avatar: identity.avatar || undefined,
-        });
-      }
       resolve(socket!);
     });
 
@@ -52,79 +59,118 @@ export function connectToServer(identity?: UserIdentity | null): Promise<Socket>
 }
 
 /**
- * Fire-and-forget re-registration on an already-connected socket.
- * Sends token (if present) so the server can restore the same userId.
+ * Tear down the current socket and reconnect with a fresh JWT.
+ * Called after login / link / session change so the handshake
+ * reflects the new identity.
  */
-export function registerIdentityOnServer(identity: UserIdentity): void {
-  if (socket?.connected) {
-    socket.emit('registerIdentity', {
-      token: identity.token || null,
-      username: identity.username || undefined,
-      avatar: identity.avatar || undefined,
-    });
+export async function reconnectWithFreshJWT(
+  getToken: () => Promise<string | null>
+): Promise<Socket | null> {
+  try {
+    if (socket) {
+      try {
+        socket.removeAllListeners();
+        socket.disconnect();
+      } catch {}
+      socket = null;
+    }
+    return await connectToServer(getToken);
+  } catch (e: any) {
+    console.log('[SOCKET] reconnectWithFreshJWT failed:', e?.message || e);
+    return null;
   }
 }
 
-/**
- * Startup flow: connect (no auto-register), then perform the
- * registerIdentity ↔ identityRegistered handshake and resolve with the
- * server-issued identity.
- *
- * - If `identity` has a token → server restores the same userId.
- * - If `identity` has no token (fresh shell) → server issues a new userId+token.
- *
- * Resolves with `{ userId, token, username, avatar }`.
- * Rejects on `identityError` or after an 8s timeout.
- */
-export function registerOrRestoreIdentity(
-  identity?: UserIdentity | null
-): Promise<{ userId: string; token: string; username: string; avatar: string }> {
+// ────────────────────────────────────────────────────────────
+// identify
+// ────────────────────────────────────────────────────────────
+export function identifyOnServer(payload?: {
+  username?: string;
+  avatar?: string;
+}): Promise<{
+  userId: string;
+  username: string;
+  avatar: string;
+  isPremium: boolean;
+  premiumSince: string | null;
+  email: string | null;
+  isAnonymous: boolean;
+}> {
   return new Promise((resolve, reject) => {
+    if (!socket?.connected) {
+      reject(new Error('Not connected to server'));
+      return;
+    }
+
     let settled = false;
 
-    const finish = (
-      fn: () => void
-    ) => {
+    const onRegistered = (data: any) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      socket?.off('identityRegistered', onRegistered);
-      socket?.off('identityError', onError);
-      fn();
-    };
-
-    const onRegistered = (data: {
-      userId: string;
-      token: string;
-      username: string;
-      avatar: string;
-    }) => {
-      finish(() => resolve(data));
+      socket?.off('selfRegistered', onRegistered);
+      socket?.off('identifyError', onError);
+      resolve(data);
     };
 
     const onError = (err: { message?: string }) => {
-      finish(() => reject(new Error(err?.message || 'Identity registration failed')));
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket?.off('selfRegistered', onRegistered);
+      socket?.off('identifyError', onError);
+      reject(new Error(err?.message || 'Identify failed'));
     };
 
     const timeout = setTimeout(() => {
-      finish(() => reject(new Error('Identity registration timed out')));
+      if (settled) return;
+      settled = true;
+      socket?.off('selfRegistered', onRegistered);
+      socket?.off('identifyError', onError);
+      reject(new Error('Identify timed out'));
     }, 8000);
 
-    // Ensure a socket exists WITHOUT auto-registering (pass null).
-    connectToServer(null)
-      .then((s) => {
-        if (settled) return;
-        s.on('identityRegistered', onRegistered);
-        s.on('identityError', onError);
-        s.emit('registerIdentity', {
-          token: identity?.token || null,
-          username: identity?.username || undefined,
-          avatar: identity?.avatar || undefined,
-        });
-      })
-      .catch((e) => {
-        finish(() => reject(e));
-      });
+    socket.on('selfRegistered', onRegistered);
+    socket.on('identifyError', onError);
+    socket.emit('identify', payload || {});
+  });
+}
+
+// ────────────────────────────────────────────────────────────
+// Legacy migration
+// ────────────────────────────────────────────────────────────
+export function migrateLegacyTokenOnServer(legacyToken: string): Promise<{
+  success: boolean;
+  userId?: string;
+  access_token?: string | null;
+  refresh_token?: string | null;
+  message?: string;
+}> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let settled = false;
+
+    const handler = (data: any) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket?.off('legacyMigrationResult', handler);
+      resolve(data);
+    };
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      socket?.off('legacyMigrationResult', handler);
+      resolve({ success: false, message: 'Migration timed out' });
+    }, 15000);
+
+    socket.on('legacyMigrationResult', handler);
+    socket.emit('migrateLegacyToken', { token: legacyToken });
   });
 }
 
@@ -139,13 +185,22 @@ export function disconnectFromServer(): void {
   }
 }
 
+export type { UserIdentity };
+
 // ============================================================
-// CHANGE USERNAME  (server resolves caller via token)
+// CHANGE USERNAME  (Bug 3 instrumentation)
 // ============================================================
 export function changeUsernameOnServer(
   newUsername: string
 ): Promise<{ success: boolean; username?: string; message?: string }> {
   return new Promise((resolve) => {
+    const connected = !!socket?.connected;
+    console.log(
+      '[SOCKET] changeUsername emit | connected:', connected,
+      '| socketId:', socket?.id || '(none)',
+      '| newUsername:', JSON.stringify(newUsername)
+    );
+
     if (!socket?.connected) {
       resolve({ success: false, message: 'Not connected to server' });
       return;
@@ -162,6 +217,7 @@ export function changeUsernameOnServer(
       done = true;
       clearTimeout(timeout);
       socket?.off('changeUsernameResult', handler);
+      console.log('[SOCKET] changeUsernameResult:', JSON.stringify(result));
       resolve(result);
     };
 
@@ -169,6 +225,7 @@ export function changeUsernameOnServer(
       if (done) return;
       done = true;
       socket?.off('changeUsernameResult', handler);
+      console.log('[SOCKET] changeUsername timed out');
       resolve({ success: false, message: 'Server did not respond' });
     }, 8000);
 
@@ -178,7 +235,7 @@ export function changeUsernameOnServer(
 }
 
 // ============================================================
-// DELETE ACCOUNT  (server resolves caller via token)
+// DELETE ACCOUNT
 // ============================================================
 export function deleteAccountOnServer(): Promise<{
   success: boolean;
@@ -261,12 +318,10 @@ export function getMatchHistoryFromServer(): Promise<MatchRecord[]> {
 // PLAYER STATS
 // ============================================================
 export interface PlayerStats {
-  // overall
   wins: number;
   losses: number;
   ties: number;
   total: number;
-  // per-mode (Chat 2)
   humanWins: number;
   humanLosses: number;
   humanTies: number;
@@ -276,7 +331,6 @@ export interface PlayerStats {
   dojoWins: number;
   dojoLosses: number;
   dojoTies: number;
-  // overall streaks (Chat 2)
   currentStreak: number;
   bestStreak: number;
 }
@@ -329,13 +383,7 @@ export function getPlayerStatsFromServer(): Promise<PlayerStats> {
 }
 
 // ============================================================
-// DOJO MATCH SYNC  (Chat 5 — roadmap item #2)
-//
-// Fire-and-forget. Dojo matches are player-vs-AI, so there is no
-// room, no opponent socket, and no need to await a reply. The server
-// persists the result to Supabase and pushes updated `playerStats`
-// back to this socket — anything listening via `onPlayerStatsUpdate`
-// will auto-refresh.
+// DOJO MATCH SYNC
 // ============================================================
 export interface DojoMatchPayload {
   result: 'win' | 'loss' | 'tie';
@@ -348,16 +396,12 @@ export interface DojoMatchPayload {
 }
 
 export function recordDojoMatchOnServer(payload: DojoMatchPayload): void {
-  if (!socket?.connected) {
-    // Silently no-op when offline — dojo progression is already
-    // tracked locally, and the server write is additive.
-    return;
-  }
+  if (!socket?.connected) return;
   socket.emit('recordDojoMatch', payload);
 }
 
 // ============================================================
-// LISTEN FOR PUSHED STATS (auto-updated on match end)
+// LISTEN FOR PUSHED STATS
 // ============================================================
 export function onPlayerStatsUpdate(
   callback: (stats: PlayerStats) => void
@@ -370,14 +414,13 @@ export function onPlayerStatsUpdate(
 
   socket.on('playerStats', handler);
 
-  // Return unsubscribe
   return () => {
     socket?.off('playerStats', handler);
   };
 }
 
 // ============================================================
-// LEADERBOARD  (pull-based — client asks on demand)
+// LEADERBOARD
 // ============================================================
 export interface LeaderboardEntry {
   userId: string;
@@ -386,7 +429,7 @@ export interface LeaderboardEntry {
   wins: number;
   losses: number;
   ties: number;
-  winRate: number; // 0..1
+  winRate: number;
   bestStreak: number;
   total: number;
 }
@@ -403,11 +446,6 @@ export const EMPTY_LEADERBOARD: Leaderboard = {
   topByStreak: [],
 };
 
-/**
- * Fetch the leaderboard from the server.
- * Resolves with an empty leaderboard if not connected or on timeout.
- * Call this when the leaderboard screen mounts.
- */
 export function getLeaderboardFromServer(): Promise<Leaderboard> {
   return new Promise((resolve) => {
     if (!socket?.connected) {
@@ -439,4 +477,387 @@ export function getLeaderboardFromServer(): Promise<Leaderboard> {
     socket.on('leaderboard', handler);
     socket.emit('getLeaderboard');
   });
+}
+
+// ============================================================
+// AVATARS (Chat 9b)
+// ============================================================
+// Server-authoritative. The client's useAvatarStore caches these.
+//
+// Shape matches db.rowToAvatar on the server:
+//   { id, userId, name, emoji, personality, rating, level,
+//     wins, losses, ties, bestStreak, defeatedMasters,
+//     isSelected, imageUrl, createdAt, updatedAt }
+export interface ServerAvatar {
+  id: string;
+  userId: string;
+  name: string;
+  emoji: string;
+  personality: {
+    aggression: number;
+    memory: number;
+    randomness: number;
+    defense: number;
+  };
+  rating: number;
+  level: number;
+  xp: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  winStreak: number;
+  bestStreak: number;
+  titles: string[];
+  defeatedMasters: string[];
+  isSelected: boolean;
+  imageUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function getAvatarsFromServer(): Promise<ServerAvatar[]> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve([]);
+      return;
+    }
+
+    let done = false;
+
+    const handler = (data: { avatars: ServerAvatar[] }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatars', handler);
+      resolve(Array.isArray(data?.avatars) ? data.avatars : []);
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('avatars', handler);
+      resolve([]);
+    }, 6000);
+
+    socket.on('avatars', handler);
+    socket.emit('getAvatars');
+  });
+}
+
+export function createAvatarOnServer(avatar: {
+  id: string;
+  name: string;
+  emoji: string;
+  personality?: {
+    aggression: number;
+    memory: number;
+    randomness: number;
+    defense: number;
+  };
+  defeatedMasters?: string[];
+  imageUrl?: string | null;
+}): Promise<{ success: boolean; avatar?: ServerAvatar; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let done = false;
+
+    const onCreated = (data: { avatar: ServerAvatar }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarCreated', onCreated);
+      socket?.off('avatarError', onError);
+      resolve({ success: true, avatar: data.avatar });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'create') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarCreated', onCreated);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: err?.message || 'Create failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('avatarCreated', onCreated);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('avatarCreated', onCreated);
+    socket.on('avatarError', onError);
+    socket.emit('createAvatar', { avatar });
+  });
+}
+
+export function updateAvatarOnServer(
+  avatarId: string,
+  patch: Partial<{
+    name: string;
+    emoji: string;
+    personality: ServerAvatar['personality'];
+    rating: number;
+    level: number;
+    xp: number;
+    winStreak: number;
+    bestStreak: number;
+    titles: string[];
+    defeatedMasters: string[];
+    imageUrl: string | null;
+  }>
+): Promise<{ success: boolean; avatar?: ServerAvatar; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let done = false;
+
+    const onUpdated = (data: { avatar: ServerAvatar }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarUpdated', onUpdated);
+      socket?.off('avatarError', onError);
+      resolve({ success: true, avatar: data.avatar });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'update') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarUpdated', onUpdated);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: err?.message || 'Update failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('avatarUpdated', onUpdated);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('avatarUpdated', onUpdated);
+    socket.on('avatarError', onError);
+    socket.emit('updateAvatar', { avatarId, patch });
+  });
+}
+
+export function deleteAvatarOnServer(
+  avatarId: string
+): Promise<{ success: boolean; newSelectedId?: string | null; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let done = false;
+
+    const onDeleted = (data: { avatarId: string; newSelectedId: string | null }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarDeleted', onDeleted);
+      socket?.off('avatarError', onError);
+      resolve({ success: true, newSelectedId: data.newSelectedId });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'delete') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatarDeleted', onDeleted);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: err?.message || 'Delete failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('avatarDeleted', onDeleted);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('avatarDeleted', onDeleted);
+    socket.on('avatarError', onError);
+    socket.emit('deleteAvatar', { avatarId });
+  });
+}
+
+export function selectAvatarOnServer(
+  avatarId: string
+): Promise<{ success: boolean; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let done = false;
+
+    // selectAvatar emits a full `avatars` list on success, no
+    // dedicated success event. We listen for `avatars` OR `avatarError`.
+    const onAvatars = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatars', onAvatars);
+      socket?.off('avatarError', onError);
+      resolve({ success: true });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'select') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('avatars', onAvatars);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: err?.message || 'Select failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('avatars', onAvatars);
+      socket?.off('avatarError', onError);
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('avatars', onAvatars);
+    socket.on('avatarError', onError);
+    socket.emit('selectAvatar', { avatarId });
+  });
+}
+
+/**
+ * Subscribe to server-pushed `avatars` events. Fires whenever the
+ * server re-sends the full avatar list (after create/update/delete/
+ * select, and on identify).
+ */
+export function onAvatarsUpdate(
+  callback: (avatars: ServerAvatar[]) => void
+): () => void {
+  if (!socket) return () => {};
+
+  const handler = (data: { avatars: ServerAvatar[] }) => {
+    if (Array.isArray(data?.avatars)) callback(data.avatars);
+  };
+
+  socket.on('avatars', handler);
+
+  return () => {
+    socket?.off('avatars', handler);
+  };
+}
+
+// ============================================================
+// ACHIEVEMENTS
+// ============================================================
+export interface AchievementCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  category: string;
+  rule: string;
+}
+
+export interface AchievementUnlockEvent {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  category: string;
+}
+
+export function getAchievementsFromServer(): Promise<Record<string, number>> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({});
+      return;
+    }
+
+    let done = false;
+
+    const handler = (data: { unlocked: Record<string, number> }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('achievements', handler);
+      resolve(data?.unlocked || {});
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('achievements', handler);
+      resolve({});
+    }, 6000);
+
+    socket.on('achievements', handler);
+    socket.emit('getAchievements');
+  });
+}
+
+export function getAchievementCatalogFromServer(): Promise<
+  AchievementCatalogEntry[]
+> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve([]);
+      return;
+    }
+
+    let done = false;
+
+    const handler = (data: { catalog: AchievementCatalogEntry[] }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('achievementCatalog', handler);
+      resolve(Array.isArray(data?.catalog) ? data.catalog : []);
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('achievementCatalog', handler);
+      resolve([]);
+    }, 6000);
+
+    socket.on('achievementCatalog', handler);
+    socket.emit('getAchievementCatalog');
+  });
+}
+
+export function onAchievementUnlocked(
+  callback: (achievement: AchievementUnlockEvent) => void
+): () => void {
+  if (!socket) return () => {};
+
+  const handler = (data: AchievementUnlockEvent) => {
+    if (data?.id) callback(data);
+  };
+
+  socket.on('achievementUnlocked', handler);
+
+  return () => {
+    socket?.off('achievementUnlocked', handler);
+  };
 }
