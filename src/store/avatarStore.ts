@@ -1,26 +1,18 @@
 // src/store/avatarStore.ts
 //
-// RPS Arena — avatar store (Chat 9b rewrite).
+// RPS Arena — avatar store.
 //
-// Chat 9b: server-authoritative. Avatars live in public.avatars and
-// are read/written via socket events. This store is a client cache
-// that mirrors server state.
+// Chat 9b: server-authoritative cache.
+// Chat 9d:
+//   - createNewAvatar no longer does an optimistic insert. It waits
+//     for the server response and inserts the server-returned avatar
+//     (with the server-generated UUID). Fixes the ID-mismatch case
+//     where the client's AvatarEngine id is not a UUID.
 //
-// Public API unchanged: every existing consumer keeps working.
-// The difference is that mutations now go through the server, and
-// the server pushes back the canonical list which we mirror.
-//
-// Boot flow (driven from App.tsx):
-//   1. Avatar store starts empty, loaded=false.
-//   2. After socket connect + identify, App.tsx calls
-//      syncFromServer() which fetches avatars and flips loaded=true.
-//
-// Match history (MatchRecord[]) is still client-only. It mirrors
-// what the client already tracks (local dojo / pvp / pvc history).
-// Server-side match_history is separate and read via multiplayer's
-// getMatchHistoryFromServer().
+// Public API unchanged. Every existing consumer keeps working.
 
 import { create } from 'zustand';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   Avatar,
   AvatarPersonality,
@@ -37,6 +29,8 @@ import {
   selectAvatarOnServer,
   onAvatarsUpdate,
 } from '../services/multiplayer';
+
+const MATCH_HISTORY_KEY = '@rps_match_history';
 
 export interface MatchRecord {
   id: string;
@@ -60,7 +54,6 @@ interface AvatarState {
 }
 
 interface AvatarActions {
-  // ── Existing public API (unchanged signatures) ──
   createNewAvatar: (name: string, emoji?: string) => void;
   selectAvatar: (id: string) => void;
   updateAvatarAfterMatch: (id: string, result: 'win' | 'lose' | 'tie') => void;
@@ -79,7 +72,6 @@ interface AvatarActions {
   getRecentMatches: (limit?: number) => MatchRecord[];
   loadAvatars: () => Promise<void>;
 
-  // ── New in Chat 9b ──
   syncFromServer: () => Promise<void>;
   attachServerListener: () => () => void;
 }
@@ -88,9 +80,6 @@ interface AvatarActions {
 // Server → client mapping
 // ────────────────────────────────────────────────────────────
 function serverToClient(s: ServerAvatar): Avatar {
-  // The client Avatar has an `image` field that the server doesn't
-  // carry except as imageUrl. Emoji avatars get { type: 'emoji' }.
-  // Custom-image avatars (deferred) would get { type: 'custom' }.
   const image =
     s.imageUrl
       ? { type: 'custom' as const, value: s.imageUrl }
@@ -116,27 +105,9 @@ function serverToClient(s: ServerAvatar): Avatar {
   } as Avatar;
 }
 
-function clientToServerShape(a: Avatar): any {
-  return {
-    id: a.id,
-    name: a.name,
-    emoji: a.emoji,
-    personality: a.personality,
-    rating: a.rating,
-    level: a.level,
-    xp: a.xp,
-    titles: a.titles,
-    defeatedMasters: a.defeatedMasters,
-    imageUrl: a.image?.type === 'custom' ? a.image.value : null,
-  };
-}
-
 // ────────────────────────────────────────────────────────────
-// Local match-history persistence (unchanged — still AsyncStorage)
+// Local match-history persistence (still AsyncStorage)
 // ────────────────────────────────────────────────────────────
-import AsyncStorage from '@react-native-async-storage/async-storage';
-const MATCH_HISTORY_KEY = '@rps_match_history';
-
 async function saveMatchHistoryLocal(matchHistory: MatchRecord[]) {
   try {
     await AsyncStorage.setItem(
@@ -184,10 +155,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
         ]);
 
         const avatars = serverAvatars.map(serverToClient);
-        const selected = avatars.find((a) => {
-          const s = serverAvatars.find((x) => x.id === a.id);
-          return s?.isSelected;
-        });
+        const selected = serverAvatars.find((x) => x.isSelected);
 
         set({
           avatars,
@@ -198,7 +166,6 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
         });
       } catch (e) {
         console.log('[AVATAR STORE] syncFromServer error:', e);
-        // Still mark loaded so UI can render empty state.
         set({ loaded: true, syncInFlight: false });
       }
     },
@@ -214,62 +181,49 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
       });
     },
 
-    // ────────────────────────────────────────────────────────
-    // loadAvatars — kept as a thin wrapper around syncFromServer
-    // so App.tsx's existing boot code keeps working.
-    // ────────────────────────────────────────────────────────
     loadAvatars: async () => {
       await get().syncFromServer();
     },
 
     // ────────────────────────────────────────────────────────
-    // createNewAvatar — the public API is sync, but the server
-    // call is async. We do an optimistic local insert so the UI
-    // updates immediately, then reconcile with the server.
+    // createNewAvatar — server-generates the ID (Chat 9d).
+    // No optimistic insert. Wait for the server response, then
+    // add the server-returned avatar to state.
     // ────────────────────────────────────────────────────────
     createNewAvatar: (name, emoji) => {
-      // Build the client-side avatar via the engine (generates id,
-      // default stats, etc.). We'll push the same shape to the server.
-      const avatar = engineCreateAvatar(name);
+      // Build a local engine avatar so we have the right shape for
+      // personality defaults, etc. The engine's id is discarded — the
+      // server sends back the real one.
+      const draft = engineCreateAvatar(name);
       if (emoji) {
-        avatar.emoji = emoji;
-        avatar.image = { type: 'emoji', value: emoji };
+        draft.emoji = emoji;
+        draft.image = { type: 'emoji', value: emoji };
       }
 
-      // Optimistic local insert.
-      set((state) => {
-        const next = {
-          avatars: [...state.avatars, avatar],
-          selectedAvatarId: state.selectedAvatarId || avatar.id,
-        };
-        return next;
-      });
-
-      // Push to server.
       createAvatarOnServer({
-        id: avatar.id,
-        name: avatar.name,
-        emoji: avatar.emoji,
-        personality: avatar.personality,
-        defeatedMasters: avatar.defeatedMasters,
+        name: draft.name,
+        emoji: draft.emoji,
+        personality: draft.personality,
+        defeatedMasters: draft.defeatedMasters,
       }).then((res) => {
-        if (!res.success) {
-          console.log('[AVATAR STORE] createAvatar server failed:', res.message);
-          // Revert the optimistic insert.
-          set((state) => ({
-            avatars: state.avatars.filter((a) => a.id !== avatar.id),
-            selectedAvatarId:
-              state.selectedAvatarId === avatar.id
-                ? null
-                : state.selectedAvatarId,
-          }));
+        if (res.success && res.avatar) {
+          const created = serverToClient(res.avatar);
+          set((state) => {
+            const already = state.avatars.some((a) => a.id === created.id);
+            if (already) return state;
+            return {
+              avatars: [...state.avatars, created],
+              selectedAvatarId: state.selectedAvatarId || created.id,
+            };
+          });
+        } else {
+          console.log('[AVATAR STORE] createAvatar failed:', res.message);
         }
       });
     },
 
     // ────────────────────────────────────────────────────────
-    // selectAvatar — optimistic, then server. Server re-broadcasts
-    // the canonical list which onAvatarsUpdate mirrors.
+    // selectAvatar — optimistic, then server
     // ────────────────────────────────────────────────────────
     selectAvatar: (id) => {
       set({ selectedAvatarId: id });
@@ -281,12 +235,9 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // updateAvatarAfterMatch — used by local match flows.
-    // The server also updates the avatar on online matches, so this
-    // is primarily for dojo/pvc/pvp where the server isn't tracking.
-    // Optimistic local update, then best-effort server push.
+    // updateAvatarAfterMatch
     // ────────────────────────────────────────────────────────
-       updateAvatarAfterMatch: (id, result) => {
+    updateAvatarAfterMatch: (id, result) => {
       let patched: Avatar | undefined;
 
       set((state) => {
@@ -300,7 +251,6 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
 
       if (!patched) return;
 
-      // Explicit local capture so TS doesn't narrow `patched` to never.
       const snap: Avatar = patched;
 
       updateAvatarOnServer(id, {
@@ -313,7 +263,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // updateAvatarPersonality — optimistic + server.
+    // updateAvatarPersonality — optimistic + server
     // ────────────────────────────────────────────────────────
     updateAvatarPersonality: (id, personality) => {
       set((state) => ({
@@ -326,10 +276,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // updateAvatarImage — the client Avatar has an `image` field
-    // that the server stores as `imageUrl` (nullable). For emoji
-    // images, we set emoji + null imageUrl. For custom (deferred),
-    // the URL is stored in imageUrl.
+    // updateAvatarImage
     // ────────────────────────────────────────────────────────
     updateAvatarImage: (id, image) => {
       const emoji = image.type === 'emoji' ? image.value : '📷';
@@ -346,7 +293,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // addTitle — optimistic + server.
+    // addTitle — optimistic + server
     // ────────────────────────────────────────────────────────
     addTitle: (id, title) => {
       let nextTitles: string[] | null = null;
@@ -369,7 +316,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // addDefeatedMaster — optimistic + server.
+    // addDefeatedMaster — optimistic + server
     // ────────────────────────────────────────────────────────
     addDefeatedMaster: (id, masterId) => {
       let nextMasters: string[] | null = null;
@@ -394,7 +341,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // addXPReward — optimistic + server.
+    // addXPReward — optimistic + server
     // ────────────────────────────────────────────────────────
     addXPReward: (id, xp, rating = 0) => {
       let patch: {
@@ -427,8 +374,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // recordMatch — local-only, unchanged from pre-Chat-9b.
-    // Server-side match_history is separate.
+    // recordMatch — local-only
     // ────────────────────────────────────────────────────────
     recordMatch: (record) => {
       set((state) => {
@@ -454,8 +400,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // deleteAvatar — optimistic + server. Server auto-selects next
-    // most recent if we just deleted the selected one.
+    // deleteAvatar — optimistic + server
     // ────────────────────────────────────────────────────────
     deleteAvatar: (id) => {
       const wasSelected = get().selectedAvatarId === id;
@@ -467,7 +412,6 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
         matchHistory: state.matchHistory.filter((m) => m.avatarId !== id),
       }));
 
-      // Persist trimmed match history.
       saveMatchHistoryLocal(get().matchHistory);
 
       deleteAvatarOnServer(id).then((res) => {
@@ -475,9 +419,6 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
           console.log('[AVATAR STORE] deleteAvatar server failed:', res.message);
           return;
         }
-        // Server may have auto-selected a different avatar. The
-        // onAvatarsUpdate listener will reconcile, but to be safe we
-        // also apply the newSelectedId directly.
         if (wasSelected && res.newSelectedId) {
           set({ selectedAvatarId: res.newSelectedId });
         }
@@ -485,7 +426,7 @@ export const useAvatarStore = create<AvatarState & AvatarActions>(
     },
 
     // ────────────────────────────────────────────────────────
-    // getSelectedAvatar — unchanged.
+    // getSelectedAvatar
     // ────────────────────────────────────────────────────────
     getSelectedAvatar: () => {
       const { avatars, selectedAvatarId } = get();

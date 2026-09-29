@@ -1,25 +1,16 @@
 // src/screens/SignupLinkScreen.tsx
 //
-// RPS Arena — link email + password to an anonymous account (Chat 9, new).
+// RPS Arena — link email + password to an anonymous account.
 //
-// Flow:
-//   1. User is anonymous (Supabase auth.users has no email).
-//   2. Fills email + password here.
-//   3. linkEmailPassword() upgrades the SAME auth user — same UID,
-//      same stats, same history, same achievements.
-//   4. The handle_new_user trigger does NOT fire here (the user
-//      already existed), so username/avatar are merged into
-//      user_metadata and profiles is updated from the server side
-//      on the next identify() if needed.
-//   5. If email confirmation is enabled in Supabase, the upgrade
-//      may not take effect until the user clicks the email link.
-//      We surface that in the success message.
-//
-// Reachable from:
-//   - HomeScreen "Save your progress" (guest banner tap)
-//   - SettingsScreen Account section (anonymous users)
+// Chat 9d:
+//   - Username field with debounced availability check.
+//   - Username is passed to supabase.auth.updateUser AND to
+//     profiles.username via linkEmailPassword.
+//   - After a successful link, the socket reconnects with a fresh
+//     JWT and re-identifies so the server sees the current auth
+//     state (belt-and-braces after Supabase rotates the session).
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -30,16 +21,36 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { ChevronLeft, Mail, Lock, ShieldCheck } from 'lucide-react-native';
+import {
+  ChevronLeft,
+  Mail,
+  Lock,
+  User,
+  ShieldCheck,
+  CheckCircle,
+  XCircle,
+} from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
-import { linkEmailPassword } from '../services/supabase';
+import { linkEmailPassword, getAccessToken } from '../services/supabase';
+import {
+  checkUsernameAvailabilityOnServer,
+  reconnectWithFreshJWT,
+  identifyOnServer,
+} from '../services/multiplayer';
 import { useUserStore } from '../store/userStore';
 import { showAlert } from '../utils/alert';
 
 export default function SignupLinkScreen() {
   const navigation = useNavigation<any>();
-  const { username, avatar, updateUser } = useUserStore();
+  const { username: currentUsername, avatar, bootstrapAuth } = useUserStore();
+
+  const [username, setUsername] = useState(currentUsername || '');
+  const [usernameError, setUsernameError] = useState<string | null>(null);
+  const [usernameChecking, setUsernameChecking] = useState(false);
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
+    null
+  );
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -47,10 +58,68 @@ export default function SignupLinkScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Debounced availability check.
+  const checkTimerRef = useRef<any>(null);
+  const lastCheckedRef = useRef<string>('');
+
+  useEffect(() => {
+    const trimmed = username.trim().toLowerCase();
+    setUsernameError(null);
+    setUsernameAvailable(null);
+
+    if (!trimmed) return;
+    if (trimmed.length < 3) {
+      setUsernameError('Must be at least 3 characters');
+      return;
+    }
+    if (trimmed.length > 15) {
+      setUsernameError('Must be 15 characters or less');
+      return;
+    }
+    if (!/^[a-z0-9_]+$/.test(trimmed)) {
+      setUsernameError('Only letters, numbers, and underscores');
+      return;
+    }
+
+    // Skip the check if it's the same as what we already checked
+    // and it came back available.
+    if (trimmed === lastCheckedRef.current && usernameAvailable) return;
+
+    if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+
+    checkTimerRef.current = setTimeout(async () => {
+      setUsernameChecking(true);
+      try {
+        const res = await checkUsernameAvailabilityOnServer(trimmed);
+        lastCheckedRef.current = trimmed;
+        setUsernameAvailable(res.available);
+        setUsernameChecking(false);
+        if (!res.available) {
+          setUsernameError(res.message || 'That username is already taken');
+        } else {
+          setUsernameError(null);
+        }
+      } catch (e: any) {
+        setUsernameChecking(false);
+        setUsernameAvailable(null);
+        // Do not surface a hard error on transient check failure —
+        // the server re-validates on submit anyway.
+      }
+    }, 400);
+
+    return () => {
+      if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
+    };
+  }, [username, usernameAvailable]);
+
   const validate = (): string | null => {
-    const trimmed = email.trim();
-    if (!trimmed) return 'Enter your email';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return 'Enter a valid email';
+    const trimmedEmail = email.trim();
+    if (!username.trim()) return 'Pick a username';
+    if (usernameError) return usernameError;
+    if (usernameChecking) return 'Checking username…';
+    if (!trimmedEmail) return 'Enter your email';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail))
+      return 'Enter a valid email';
     if (password.length < 8) return 'Password must be at least 8 characters';
     if (password !== confirm) return 'Passwords do not match';
     return null;
@@ -66,29 +135,42 @@ export default function SignupLinkScreen() {
     setLoading(true);
     setError(null);
 
+    const trimmedUsername = username.trim().toLowerCase();
+
     const result = await linkEmailPassword(
       email.trim(),
       password,
-      username || undefined,
+      trimmedUsername,
       avatar || undefined
     );
 
-    setLoading(false);
-
     if (!result.success) {
+      setLoading(false);
       setError(result.message || 'Could not link account');
       return;
     }
 
-    // Refresh the identity cache so the store knows we're no longer
-    // anonymous. We don't have the new email in the store yet —
-    // bootstrapAuth() will pick it up on next App.tsx boot, but we
-    // can proactively re-load the profile.
+    // Reconnect the socket with the fresh (now-linked) JWT so the
+    // server's view of our auth state matches Supabase's.
     try {
-      await useUserStore.getState().bootstrapAuth();
+      await reconnectWithFreshJWT(getAccessToken);
+      await identifyOnServer({
+        username: trimmedUsername,
+        avatar: avatar || undefined,
+      });
+    } catch (e: any) {
+      console.log('[SIGNUP] reconnect/identify failed:', e?.message);
+      // Non-fatal. The next page load will pick up the new session.
+    }
+
+    // Refresh the store so isAnonymous flips false and email is set.
+    try {
+      await bootstrapAuth();
     } catch (e: any) {
       console.log('[SIGNUP] refresh after link failed:', e?.message);
     }
+
+    setLoading(false);
 
     if (result.needsConfirmation) {
       showAlert(
@@ -101,6 +183,19 @@ export default function SignupLinkScreen() {
 
     navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   };
+
+  const usernameStatus = (() => {
+    if (usernameChecking) {
+      return <ActivityIndicator size="small" color="#5a5a7a" />;
+    }
+    if (usernameAvailable === true && !usernameError) {
+      return <CheckCircle size={18} color="#4ade80" />;
+    }
+    if (usernameAvailable === false) {
+      return <XCircle size={18} color="#f87171" />;
+    }
+    return null;
+  })();
 
   return (
     <ScreenContainer>
@@ -123,10 +218,30 @@ export default function SignupLinkScreen() {
 
           <Text style={styles.headline}>Save your progress</Text>
           <Text style={styles.subhead}>
-            Add an email and password to your guest account. Everything stays
-            exactly as it is — same stats, same history, same achievements.
+            Pick a username and add an email + password. Everything stays
+            exactly as it is — same stats, same avatars, same achievements.
             Sign in from any device with this email.
           </Text>
+
+          <View style={styles.field}>
+            <User size={18} color="#5a5a7a" style={styles.fieldIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder="Pick a username"
+              placeholderTextColor="#3a3a4a"
+              autoCapitalize="none"
+              autoCorrect={false}
+              maxLength={15}
+              value={username}
+              onChangeText={setUsername}
+              editable={!loading}
+            />
+            {usernameStatus}
+          </View>
+
+          {usernameError && (
+            <Text style={styles.error}>{usernameError}</Text>
+          )}
 
           <View style={styles.field}>
             <Mail size={18} color="#5a5a7a" style={styles.fieldIcon} />

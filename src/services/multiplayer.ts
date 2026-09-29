@@ -3,11 +3,14 @@
 // RPS Arena — Socket.IO client.
 //
 // Chat 9: JWT-at-handshake, identify, migrateLegacyToken.
-// Chat 9b:
-//   - Avatar event wrappers (get/create/update/delete/select).
-//   - onAvatarsUpdate subscription.
-//   - reconnectWithFreshJWT() helper for post-login / post-link.
-//   - Client log before changeUsername emit (Bug 3 instrumentation).
+// Chat 9b: avatar event wrappers, onAvatarsUpdate, reconnectWithFreshJWT.
+// Chat 9c: nothing client-side.
+// Chat 9d:
+//   - createAvatarOnServer no longer sends an `id`. The server
+//     generates the UUID (fixes "invalid input syntax for type uuid").
+//   - New checkUsernameAvailabilityOnServer(username).
+//   - New onUsernameAvailability listener? No — that's a one-shot
+//     response. See checkUsernameAvailabilityOnServer.
 
 import { io, Socket } from 'socket.io-client';
 import { UserIdentity } from './identity';
@@ -58,11 +61,6 @@ export function connectToServer(
   });
 }
 
-/**
- * Tear down the current socket and reconnect with a fresh JWT.
- * Called after login / link / session change so the handshake
- * reflects the new identity.
- */
 export async function reconnectWithFreshJWT(
   getToken: () => Promise<string | null>
 ): Promise<Socket | null> {
@@ -188,7 +186,7 @@ export function disconnectFromServer(): void {
 export type { UserIdentity };
 
 // ============================================================
-// CHANGE USERNAME  (Bug 3 instrumentation)
+// CHANGE USERNAME
 // ============================================================
 export function changeUsernameOnServer(
   newUsername: string
@@ -231,6 +229,47 @@ export function changeUsernameOnServer(
 
     socket.on('changeUsernameResult', handler);
     socket.emit('changeUsername', { newUsername });
+  });
+}
+
+// ============================================================
+// CHECK USERNAME AVAILABILITY (Chat 9d — new)
+// ============================================================
+export function checkUsernameAvailabilityOnServer(
+  username: string
+): Promise<{ available: boolean; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      resolve({ available: false, message: 'Not connected to server' });
+      return;
+    }
+
+    let done = false;
+
+    const handler = (result: {
+      username: string;
+      available: boolean;
+      message?: string;
+    }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('usernameAvailability', handler);
+      resolve({
+        available: !!result?.available,
+        message: result?.message,
+      });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('usernameAvailability', handler);
+      resolve({ available: false, message: 'Check timed out' });
+    }, 5000);
+
+    socket.on('usernameAvailability', handler);
+    socket.emit('checkUsernameAvailability', { username });
   });
 }
 
@@ -480,14 +519,8 @@ export function getLeaderboardFromServer(): Promise<Leaderboard> {
 }
 
 // ============================================================
-// AVATARS (Chat 9b)
+// AVATARS
 // ============================================================
-// Server-authoritative. The client's useAvatarStore caches these.
-//
-// Shape matches db.rowToAvatar on the server:
-//   { id, userId, name, emoji, personality, rating, level,
-//     wins, losses, ties, bestStreak, defeatedMasters,
-//     isSelected, imageUrl, createdAt, updatedAt }
 export interface ServerAvatar {
   id: string;
   userId: string;
@@ -544,8 +577,8 @@ export function getAvatarsFromServer(): Promise<ServerAvatar[]> {
   });
 }
 
+// CHAT 9d: no longer sends `id`. Server generates the UUID.
 export function createAvatarOnServer(avatar: {
-  id: string;
   name: string;
   emoji: string;
   personality?: {
@@ -710,8 +743,6 @@ export function selectAvatarOnServer(
 
     let done = false;
 
-    // selectAvatar emits a full `avatars` list on success, no
-    // dedicated success event. We listen for `avatars` OR `avatarError`.
     const onAvatars = () => {
       if (done) return;
       done = true;
@@ -745,11 +776,6 @@ export function selectAvatarOnServer(
   });
 }
 
-/**
- * Subscribe to server-pushed `avatars` events. Fires whenever the
- * server re-sends the full avatar list (after create/update/delete/
- * select, and on identify).
- */
 export function onAvatarsUpdate(
   callback: (avatars: ServerAvatar[]) => void
 ): () => void {
