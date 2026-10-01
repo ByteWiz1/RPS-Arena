@@ -2,11 +2,27 @@
 //
 // RPS Arena — tournament bracket.
 //
-// Chat 11b (debug pass):
-//   - Subscribes to onTournamentError and surfaces errors in the banner.
-//   - [TOURNAMENT BRACKET] logs at each step: mount, connect, initial
-//     state, every event received, local actions, state transitions.
-//   - activeWindowUpdate is logged only every 10s to avoid spam.
+// Chat 11e — Active window removed.
+//   The Active window was causing state divergence (matched players
+//   were on the match screen when the window closed, and got
+//   eliminated) and never synced its countdown reliably. Removed in
+//   favor of a state-driven flow:
+//
+//     - Round starts: server pairs, creates rooms, emits matchAssigned
+//       to matched players immediately. BYE player advances silently.
+//     - Matched players navigate to the match screen.
+//     - BYE player stays on the bracket and sees the live scoreboard
+//       strip updating as the other match progresses.
+//     - Matches resolve. roundComplete fires. Next round begins.
+//     - Disconnect handling is the only presence check.
+//
+//   Removed: Active button, Active countdown bar, "You're Active"
+//   confirmation, pressActive emit, activeSet state, activeSecondsLeft
+//   state, onActiveWindowUpdate / onPlayerActive / onPlayerInactive
+//   subscriptions.
+//
+// Kept: live scoreboard strip, reconnect safety net, "3 players"
+//   header label, host "Begin Round X" button, chat panel.
 //
 // APK: platform-agnostic.
 
@@ -26,24 +42,25 @@ import ScreenContainer from '../components/ScreenContainer';
 import BracketSquare, { BracketSquareState } from '../components/BracketSquare';
 import BracketConnectorColumn from '../components/BracketConnector';
 import TournamentChatPanel from '../components/TournamentChatPanel';
+import LiveScoreboardStrip, {
+  ScoreEntry,
+} from '../components/LiveScoreboardStrip';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
 import {
   connectToServer,
   getSocket,
   getTournamentFromServer,
-  pressActiveOnServer,
   beginNextRoundOnServer,
   onTournamentState,
+  onTournamentScoresUpdate,
   onRoundStarted,
-  onActiveWindowUpdate,
-  onPlayerActive,
-  onPlayerInactive,
   onHostChanged,
   onRoundComplete,
   onTournamentComplete,
   onMatchAssigned,
   onTournamentError,
   type Tournament,
+  type TournamentScoresPayload,
   type RoundStartedPayload,
 } from '../services/multiplayer';
 import { getAccessToken } from '../services/supabase';
@@ -77,12 +94,10 @@ export default function TournamentBracketScreen() {
   const mySocketIdRef = useRef<string>('');
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
-  const [activeSecondsLeft, setActiveSecondsLeft] = useState(0);
-  const [activeSet, setActiveSet] = useState<Set<string>>(new Set());
-  const [eliminated, setEliminated] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [startingNext, setStartingNext] = useState(false);
   const [banner, setBanner] = useState<string>('');
+  const [scoresByMatch, setScoresByMatch] = useState<TournamentScoresPayload>({});
   const lastRoundRef = useRef<number>(0);
 
   const isHost = tournament?.hostId === myUserId;
@@ -92,15 +107,13 @@ export default function TournamentBracketScreen() {
     tournament?.rounds && tournament.rounds.length > 0
       ? tournament.rounds[tournament.rounds.length - 1]
       : null;
-  const activeWindowOpen =
-    isLive && currentRoundObj?.status === 'active' && activeSecondsLeft > 0;
 
   // ─── Connect + listeners ───
   useEffect(() => {
     let cancelled = false;
     let cleanup: (() => void) | undefined;
 
-    const setup = async () => {
+    const setup = async (): Promise<(() => void) | undefined> => {
       console.log(
         '[TOURNAMENT BRACKET] mount | id:', tournamentId, '| code:', code,
         '| myUserId:', myUserId,
@@ -114,12 +127,12 @@ export default function TournamentBracketScreen() {
         } catch (e: any) {
           console.log('[TOURNAMENT BRACKET] connect failed:', e?.message || e);
           if (!cancelled) setBanner('Could not connect to server');
-          return;
+          return undefined;
         }
       }
 
       const socket = getSocket();
-      if (!socket || cancelled) return;
+      if (!socket || cancelled) return undefined;
 
       mySocketIdRef.current = socket.id || '';
 
@@ -129,8 +142,7 @@ export default function TournamentBracketScreen() {
           console.log(
             '[TOURNAMENT BRACKET] initial state | status:', t.status,
             '| round:', t.currentRound,
-            '| players:', t.players.length,
-            '| activeSet:', t.activeUserIds?.length ?? 0
+            '| players:', t.players.length
           );
           applyState(t);
         } else {
@@ -144,57 +156,28 @@ export default function TournamentBracketScreen() {
         applyState(t);
       });
 
-      const offStarted = onRoundStarted((payload: RoundStartedPayload) => {
+      const offScores = onTournamentScoresUpdate((payload) => {
+        if (cancelled) return;
+        setScoresByMatch(payload);
+      });
+
+            const offStarted = onRoundStarted((payload: RoundStartedPayload) => {
         if (cancelled) return;
         console.log(
           '[TOURNAMENT BRACKET] roundStarted | round:', payload.roundNumber,
           '| matches:', payload.matches?.length ?? 0,
           '| bye:', payload.bye
         );
-        setActiveSet(new Set());
-        setEliminated(new Set());
         lastRoundRef.current = payload.roundNumber;
-        if (typeof payload.activeWindowMs === 'number') {
-          setActiveSecondsLeft(Math.round(payload.activeWindowMs / 1000));
-        }
-        setBanner(`Round ${payload.roundNumber} — press Active`);
-        setTimeout(() => setBanner(''), 4000);
-      });
+        setBanner(`Round ${payload.roundNumber} started`);
+        setTimeout(() => setBanner(''), 3000);
 
-      const offTick = onActiveWindowUpdate((data) => {
-        if (cancelled) return;
-        // Log only every 10s to avoid console spam.
-        if (data.secondsLeft % 10 === 0 || data.secondsLeft <= 5) {
-          console.log('[TOURNAMENT BRACKET] tick | secondsLeft:', data.secondsLeft);
-        }
-        setActiveSecondsLeft(data.secondsLeft);
-      });
-
-      const offActive = onPlayerActive((data) => {
-        if (cancelled) return;
-        console.log('[TOURNAMENT BRACKET] playerActive | userId:', data.userId);
-        setActiveSet((prev) => {
-          const next = new Set(prev);
-          next.add(data.userId);
-          return next;
-        });
-      });
-
-      const offInactive = onPlayerInactive((data) => {
-        if (cancelled) return;
-        console.log(
-          '[TOURNAMENT BRACKET] playerInactive | userId:', data.userId,
-          '| reason:', data.reason
-        );
-        setEliminated((prev) => {
-          const next = new Set(prev);
-          next.add(data.userId);
-          return next;
-        });
-        setActiveSet((prev) => {
-          const next = new Set(prev);
-          next.delete(data.userId);
-          return next;
+        // Fresh state fetch at the top of every round. Ensures the
+        // strip and bracket reflect the current round even if a
+        // broadcast was missed (this is the round-1 BYE strip fix).
+        getTournamentFromServer({ tournamentId }).then((t) => {
+          if (cancelled || !t) return;
+          applyState(t);
         });
       });
 
@@ -248,7 +231,7 @@ export default function TournamentBracketScreen() {
 
       const offError = onTournamentError((err) => {
         if (cancelled) return;
-        if (err.action === 'active' || err.action === 'beginRound') {
+        if (err.action === 'beginRound') {
           console.log('[TOURNAMENT BRACKET] server error:', err.action, err.message);
           setBanner(err.message);
           setTimeout(() => setBanner(''), 3500);
@@ -256,27 +239,43 @@ export default function TournamentBracketScreen() {
         }
       });
 
+      // Reconnect safety net.
+      const onReconnect = () => {
+        if (cancelled) return;
+        console.log('[TOURNAMENT BRACKET] socket reconnected — re-fetching state');
+        getTournamentFromServer({ tournamentId }).then((t) => {
+          if (cancelled || !t) return;
+          applyState(t);
+        });
+      };
+      socket.on('connect', onReconnect);
+
       const onMessage = (msg: ChatMessage) => {
         setMessages((prev) => [...prev, msg]);
       };
       socket.on('newMessage', onMessage);
 
-      cleanup = () => {
+      return () => {
         offState();
+        offScores();
         offStarted();
-        offTick();
-        offActive();
-        offInactive();
         offHost();
         offRoundComplete();
         offComplete();
         offMatch();
         offError();
+        socket.off('connect', onReconnect);
         socket.off('newMessage', onMessage);
       };
     };
 
-    setup();
+    setup().then((fn) => {
+      if (cancelled) {
+        if (typeof fn === 'function') fn();
+        return;
+      }
+      if (typeof fn === 'function') cleanup = fn;
+    });
 
     return () => {
       cancelled = true;
@@ -298,32 +297,28 @@ export default function TournamentBracketScreen() {
     if (t.currentRound !== lastRoundRef.current) {
       console.log(
         '[TOURNAMENT BRACKET] applyState — round change:',
-        lastRoundRef.current, '→', t.currentRound,
-        '| resetting eliminated'
+        lastRoundRef.current, '→', t.currentRound
       );
       lastRoundRef.current = t.currentRound;
-      setEliminated(new Set());
     }
     setTournament(t);
-    if (Array.isArray(t.activeUserIds)) {
-      setActiveSet(new Set(t.activeUserIds));
-    }
-    if (typeof t.activeSecondsLeft === 'number') {
-      setActiveSecondsLeft(t.activeSecondsLeft);
-    }
   };
 
-  const handlePressActive = useCallback(() => {
-    if (!tournamentId) return;
-    console.log('[TOURNAMENT BRACKET] pressActive | id:', tournamentId);
-    playSound('click');
-    pressActiveOnServer(tournamentId);
-    setActiveSet((prev) => {
-      const next = new Set(prev);
-      next.add(myUserId);
-      return next;
+    // ─── State-driven champion navigation ───
+  // If the tournament finishes, go to the champion screen. This
+  // fires even if tournamentComplete was dropped or arrived during
+  // a navigation race.
+  useEffect(() => {
+    if (!tournament) return;
+    if (tournament.status !== 'finished') return;
+    console.log(
+      '[TOURNAMENT BRACKET] status finished → navigating to champion'
+    );
+    navigation.replace('TournamentChampion', {
+      tournamentId,
+      winnerId: tournament.winnerId || '',
     });
-  }, [tournamentId, myUserId]);
+  }, [tournament?.status, tournament?.winnerId, tournamentId, navigation]);
 
   const handleBeginNextRound = useCallback(() => {
     if (!isHost || !tournamentId) return;
@@ -338,7 +333,6 @@ export default function TournamentBracketScreen() {
     navigation.goBack();
   }, [navigation]);
 
-  // ─── Name resolution ───
   const displayName = useCallback(
     (uid: string): string => {
       if (!uid) return 'Player';
@@ -356,8 +350,6 @@ export default function TournamentBracketScreen() {
     isBye: boolean
   ): BracketSquareState => {
     if (isBye) return 'bye';
-    if (eliminated.has(userId)) return 'eliminated';
-    if (activeSet.has(userId)) return 'active';
     if (tournament && !tournament.players.includes(userId)) {
       return 'eliminated';
     }
@@ -366,18 +358,55 @@ export default function TournamentBracketScreen() {
 
   const isCurrentPlayerSquare = (userId: string) => userId === myUserId;
 
-  const showActiveButtonOnSquare = (userId: string): boolean => {
-    if (userId !== myUserId) return false;
-    if (!isLive) return false;
-    if (!currentRoundObj || currentRoundObj.status !== 'active') return false;
-    if (activeSecondsLeft <= 0) return false;
-    return true;
-  };
-
   const meInTournament = !!tournament && tournament.players.includes(myUserId);
-  const iAlreadyActive = activeSet.has(myUserId);
-  const showBigActiveButton =
-    meInTournament && activeWindowOpen && !iAlreadyActive;
+
+  // ─── Live scoreboard entries ───
+    const buildScoreEntries = useCallback((): ScoreEntry[] => {
+    if (!tournament || !tournament.rounds?.length) return [];
+    const lastRound = tournament.rounds[tournament.rounds.length - 1];
+    if (!lastRound || !lastRound.matches?.length) return [];
+
+    const entries: ScoreEntry[] = [];
+    for (const m of lastRound.matches) {
+      // Prefer live scores from the tournamentScoresUpdate event; fall
+      // back to the state snapshot. Without this, the strip only
+      // updates on tournamentState broadcasts (which are less frequent
+      // than score updates during a match).
+      const live = scoresByMatch[m.matchId];
+      const p1Score = live?.scores?.p1 ?? m.scores?.p1 ?? 0;
+      const p2Score = live?.scores?.p2 ?? m.scores?.p2 ?? 0;
+      const status = live?.status ?? m.status;
+
+      entries.push({
+        matchId: m.matchId,
+        p1UserId: m.p1,
+        p2UserId: m.p2,
+        p1Name: displayName(m.p1),
+        p2Name: displayName(m.p2),
+        p1Score,
+        p2Score,
+        p1Color: tournament.colorMap?.[m.p1] || null,
+        p2Color: tournament.colorMap?.[m.p2] || null,
+        status,
+        winnerUserId: m.winner || null,
+      });
+    }
+    return entries;
+  }, [tournament, displayName, scoresByMatch]);
+  // Am I currently in an active match this round? If so, the match
+  // screen will navigate us there, and this screen shouldn't show the
+  // strip.
+  const myMatchThisRound = (() => {
+    if (!currentRoundObj || !myUserId) return null;
+    for (const m of currentRoundObj.matches) {
+      if (m.p1 === myUserId || m.p2 === myUserId) return m;
+    }
+    return null;
+  })();
+  const myMatchIsActive =
+    myMatchThisRound != null && myMatchThisRound.status !== 'complete';
+  const showLiveStrip =
+    isLive && !myMatchIsActive && (currentRoundObj?.matches?.length ?? 0) > 0;
 
   return (
     <ScreenContainer>
@@ -388,9 +417,9 @@ export default function TournamentBracketScreen() {
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>🏆 Bracket</Text>
-            <Text style={styles.headerSubtitle}>
+                        <Text style={styles.headerSubtitle}>
               {tournament
-                ? `Round ${currentRound || '—'} · ${tournament.players.length} left`
+                ? `Round ${currentRound || '—'} · ${tournament.players.length} players · First to ${tournament.winTarget}`
                 : 'Loading…'}
             </Text>
           </View>
@@ -403,34 +432,14 @@ export default function TournamentBracketScreen() {
           </View>
         ) : null}
 
-        {activeWindowOpen ? (
-          <View style={styles.activeBar}>
-            <Text style={styles.activeBarText}>
-              Active window · {activeSecondsLeft}s
-            </Text>
-            <Text style={styles.activeBarSub}>
-              {activeSet.size}/{tournament?.players.length ?? 0} pressed Active
-            </Text>
-          </View>
-        ) : null}
-
-        {showBigActiveButton ? (
-          <TouchableOpacity
-            style={styles.bigActiveBtn}
-            onPress={handlePressActive}
-            activeOpacity={0.8}
-          >
-            <Text style={styles.bigActiveBtnText}>
-              Press Active to stay in the round
-            </Text>
-          </TouchableOpacity>
-        ) : null}
-
-        {meInTournament && activeWindowOpen && iAlreadyActive ? (
-          <View style={styles.activeConfirmedBox}>
-            <Text style={styles.activeConfirmedText}>
-              ✓ You're Active · waiting for others
-            </Text>
+        {showLiveStrip ? (
+          <View style={styles.liveStripWrap}>
+            <LiveScoreboardStrip
+              entries={buildScoreEntries()}
+              currentUserId={myUserId}
+              currentMatchId={null}
+              title={`Round ${currentRound} — live scores`}
+            />
           </View>
         ) : null}
 
@@ -455,10 +464,6 @@ export default function TournamentBracketScreen() {
                     resolveSquareState,
                     displayName,
                     isCurrentPlayerSquare,
-                    showActiveButtonOnSquare,
-                    activeSecondsLeft,
-                    handlePressActive,
-                    activeSet,
                     myUserId,
                   })}
                 </View>
@@ -510,10 +515,6 @@ interface RenderCtx {
   resolveSquareState: (userId: string, isBye: boolean) => BracketSquareState;
   displayName: (uid: string) => string;
   isCurrentPlayerSquare: (userId: string) => boolean;
-  showActiveButtonOnSquare: (userId: string) => boolean;
-  activeSecondsLeft: number;
-  handlePressActive: () => void;
-  activeSet: Set<string>;
   myUserId: string;
 }
 
@@ -554,7 +555,6 @@ function renderRounds(t: Tournament, ctx: RenderCtx) {
       slots={round1Slots}
       ctx={ctx}
       roundNumber={1}
-      roundStatus={t.rounds[0]?.status || 'pending'}
     />
   );
 
@@ -604,7 +604,6 @@ function renderRounds(t: Tournament, ctx: RenderCtx) {
         slots={slots}
         ctx={ctx}
         roundNumber={round.roundNumber}
-        roundStatus={round.status}
       />
     );
   }
@@ -636,10 +635,9 @@ interface ColumnProps {
   slots: { userId: string; isBye: boolean; isWinner: boolean }[];
   ctx: RenderCtx;
   roundNumber: number;
-  roundStatus: 'pending' | 'active' | 'complete';
 }
 
-function BracketColumn({ slots, ctx, roundNumber, roundStatus }: ColumnProps) {
+function BracketColumn({ slots, ctx, roundNumber }: ColumnProps) {
   return (
     <View
       style={{
@@ -662,10 +660,6 @@ function BracketColumn({ slots, ctx, roundNumber, roundStatus }: ColumnProps) {
                 color={null}
                 state={state}
                 isMe={ctx.isCurrentPlayerSquare(slot.userId)}
-                showActiveButton={ctx.showActiveButtonOnSquare(slot.userId)}
-                activeSecondsLeft={ctx.activeSecondsLeft}
-                onPressActive={ctx.handlePressActive}
-                alreadyActive={ctx.activeSet.has(slot.userId)}
                 width={SQUARE_W}
                 height={SQUARE_H}
                 isWinner={slot.isWinner}
@@ -710,51 +704,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   bannerText: { fontSize: 12, color: '#fbbf24', fontWeight: '700' },
-  activeBar: {
-    marginHorizontal: 12,
+  liveStripWrap: {
     marginTop: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(233, 69, 96, 0.08)',
-    borderWidth: 1,
-    borderColor: 'rgba(233, 69, 96, 0.3)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  activeBarText: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
-  activeBarSub: { color: '#8a8a9a', fontSize: 11, fontWeight: '700' },
-  bigActiveBtn: {
-    marginHorizontal: 12,
-    marginTop: 8,
-    paddingVertical: 14,
-    borderRadius: 12,
-    backgroundColor: '#e94560',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bigActiveBtnText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 0.4,
-  },
-  activeConfirmedBox: {
-    marginHorizontal: 12,
-    marginTop: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: 'rgba(74, 222, 128, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
-    alignItems: 'center',
-  },
-  activeConfirmedText: {
-    color: '#4ade80',
-    fontSize: 12,
-    fontWeight: '800',
   },
   bracketWrap: { flex: 1, marginTop: 8 },
   centerPad: {

@@ -10,13 +10,19 @@
 //     generates the UUID (fixes "invalid input syntax for type uuid").
 //   - New checkUsernameAvailabilityOnServer(username).
 // Chat 11: tournament socket helpers + types.
+// Chat 11: tournament socket helpers + types.
 // Chat 11b (debug pass):
 //   - onTournamentError: subscribe to server-side tournament errors.
 //   - onMatchCancelled: subscribe to match cancellation events.
-//   - [TOURNAMENT CLIENT] logs on every tournament emit and receive
-//     so client and server logs can be correlated.
-//   - getTournamentFromServer logs the emit and result, since a null
-//     state is the most common cause of tournament client failures.
+//   - [TOURNAMENT CLIENT] logs on every tournament emit and receive.
+//   - getTournamentFromServer logs the emit and result.
+// Chat 11e — Active window removed.
+//   - pressActiveOnServer: kept as a no-op. The server's pressActive
+//     handler is a no-op too. Safe if any stale client still emits it.
+//   - onActiveWindowUpdate / onPlayerActive / onPlayerInactive: kept
+//     for compatibility. The server no longer emits these, so the
+//     subscriptions never fire. Harmless.
+//   - No other changes.
 //
 // IMPORTANT: tournament screens must call getSocket() first and only
 // fall back to connectToServer if no socket is connected. Calling

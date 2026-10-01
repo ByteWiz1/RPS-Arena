@@ -2,12 +2,23 @@
 //
 // RPS Arena — tournament lobby.
 //
-// Chat 11b (debug pass):
-//   - Subscribes to onTournamentError so start failures surface.
-//   - [TOURNAMENT LOBBY] logs at each step: mount, connect, state
-//     receives, start emit, tournamentStarted receive, navigation.
+// Chat 11d fixes:
+//   - Reconnect safety net: on socket 'connect', re-fetch tournament
+//     state. The server joins the socket to the tournament room inside
+//     getTournament, so broadcasts (state updates, host changes,
+//     tournamentStarted) resume reaching this screen after a reconnect.
 //
-// APK: platform-agnostic. Clipboard is web-only (guarded).
+// Cleanup pattern (applies to all tournament screens):
+//   `setup` is an async function that returns its cleanup function.
+//   It must be typed `Promise<(() => void) | undefined>` and must
+//   return `undefined` on the branches that bail early (connect
+//   failure, cancelled before listeners attach). The `.then()`
+//   callback checks `cancelled` first — if the component unmounted
+//   while `setup` was still resolving, we run cleanup immediately.
+//   Otherwise we stash it and let the outer `useEffect` cleanup run it
+//   on the next unmount.
+//
+// APK: platform-agnostic.
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
@@ -84,7 +95,7 @@ export default function TournamentLobbyScreen() {
     let cancelled = false;
     let cleanup: (() => void) | undefined;
 
-    const setup = async () => {
+    const setup = async (): Promise<(() => void) | undefined> => {
       console.log(
         '[TOURNAMENT LOBBY] mount | id:', tournamentId, '| code:', code,
         '| socket connected:', !!getSocket()?.connected
@@ -97,12 +108,12 @@ export default function TournamentLobbyScreen() {
         } catch (e: any) {
           console.log('[TOURNAMENT LOBBY] connect failed:', e?.message || e);
           if (!cancelled) setError('Could not connect to server');
-          return;
+          return undefined;
         }
       }
 
       const socket = getSocket();
-      if (!socket || cancelled) return;
+      if (!socket || cancelled) return undefined;
 
       mySocketIdRef.current = socket.id || '';
 
@@ -148,6 +159,22 @@ export default function TournamentLobbyScreen() {
         }
       });
 
+      // Reconnect safety net: on reconnect, re-fetch state. Server
+      // rejoins the socket to the tournament room inside getTournament.
+      const onReconnect = () => {
+        if (cancelled) return;
+        console.log('[TOURNAMENT LOBBY] socket reconnected — re-fetching state');
+        getTournamentFromServer({ tournamentId }).then((t) => {
+          if (cancelled || !t) return;
+          console.log(
+            '[TOURNAMENT LOBBY] reconnected state | players:', t.players.length,
+            '| status:', t.status
+          );
+          setTournament(t);
+        });
+      };
+      socket.on('connect', onReconnect);
+
       const onMessage = (msg: ChatMessage) => {
         setMessages((prev) => [...prev, msg]);
       };
@@ -158,12 +185,19 @@ export default function TournamentLobbyScreen() {
         offStarted();
         offHost();
         offError();
+        socket.off('connect', onReconnect);
         socket.off('newMessage', onMessage);
       };
     };
 
     setup().then((fn) => {
-      if (fn) cleanup = fn;
+      if (cancelled) {
+        // The component unmounted while setup was still resolving.
+        // Detach listeners now.
+        if (typeof fn === 'function') fn();
+        return;
+      }
+      if (typeof fn === 'function') cleanup = fn;
     });
 
     return () => {
@@ -235,8 +269,6 @@ export default function TournamentLobbyScreen() {
       '| players:', joinedCount
     );
     startTournamentOnServer(tournamentId);
-    // Safety timeout so the spinner doesn't sit forever if the
-    // tournamentStarted event never arrives.
     setTimeout(() => {
       setStarting(false);
     }, 5000);
@@ -249,7 +281,6 @@ export default function TournamentLobbyScreen() {
     navigation.goBack();
   }, [tournament?.status, tournamentId, navigation]);
 
-  // B22: name resolution.
   const displayName = useCallback(
     (uid: string): string => {
       if (!uid) return 'Player';

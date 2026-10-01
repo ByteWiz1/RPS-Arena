@@ -2,13 +2,19 @@
 //
 // RPS Arena — tournament match.
 //
-// Chat 11b (debug pass):
-//   - Subscribes to onMatchCancelled so a cancelled match (walkover,
-//     active timeout) navigates both players back to the bracket.
-//     Without this, the losing player was stuck on the match screen.
-//   - Subscribes to onTournamentError and surfaces errors in a banner.
-//   - [TOURNAMENT MATCH] logs at each step: mount, winTarget changes,
-//     every room event, every tournament event, navigation.
+// Chat 11d fixes:
+//   - triggerMatchEnd no longer blocks navigation. Two separate refs:
+//     navigatedAwayRef (celebration + overlay guard) and
+//     navigationScheduledRef (idempotent navigation scheduler).
+//     Previously a single ref meant a second call would set the ref
+//     and skip navigation, leaving the screen frozen on the overlay
+//     while the celebration audio played.
+//   - Fallback navigation 5s after triggerMatchEnd as a safety net.
+//   - Subscribes to onRoundComplete: if the round ends while this
+//     screen is still mounted, navigate back to the bracket.
+//   - Reconnect safety net: on socket 'connect', re-fetch tournament
+//     state and re-emit createRoom so the socket rejoins the room.
+//   - makeMove emit log for debugging stuck screens.
 //
 // APK: platform-agnostic.
 
@@ -30,6 +36,7 @@ import {
   onTournamentScoresUpdate,
   onMatchCancelled,
   onTournamentError,
+  onRoundComplete,
   getTournamentFromServer,
   type Tournament,
   type TournamentScoresPayload,
@@ -105,7 +112,14 @@ export default function TournamentMatchScreen() {
   const [opponentRecentMoves, setOpponentRecentMoves] = useState<Move[]>([]);
   const opponentSocketIdRef = useRef<string | null>(null);
   const mySocketIdRef = useRef<string>('');
+
+  // Two separate guards:
+  //   navigatedAwayRef — set once when the celebration/overlay starts,
+  //     prevents it from firing twice.
+  //   navigationScheduledRef — set once when we schedule navigation,
+  //     prevents double-scheduling. Navigation itself always fires.
   const navigatedAwayRef = useRef(false);
+  const navigationScheduledRef = useRef(false);
 
   const countdownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -114,6 +128,16 @@ export default function TournamentMatchScreen() {
   const buildPersonalityPayload = () => {
     const avatar = getSelectedAvatar();
     return avatar?.personality ?? 'adaptive';
+  };
+
+    const navigateBack = () => {
+    console.log('[TOURNAMENT MATCH] navigating back to bracket');
+    try {
+      navigation.replace('TournamentBracket', { tournamentId });
+      console.log('[TOURNAMENT MATCH] replace dispatched');
+    } catch (e: any) {
+      console.log('[TOURNAMENT MATCH] navigate back threw:', e?.message || e);
+    }
   };
 
   // ─── Mount ───
@@ -150,21 +174,24 @@ export default function TournamentMatchScreen() {
 
       socket.emit('enterMatchScreen', { roomCode });
 
-      console.log(
-        '[TOURNAMENT MATCH] emitting createRoom | room:', roomCode,
-        '| tournamentId:', tournamentId,
-        '| matchId:', matchId,
-        '| battleMode:', isAvatarMode ? 'avatar' : 'human'
-      );
+      const emitCreateRoom = () => {
+        console.log(
+          '[TOURNAMENT MATCH] emitting createRoom | room:', roomCode,
+          '| tournamentId:', tournamentId,
+          '| matchId:', matchId,
+          '| battleMode:', isAvatarMode ? 'avatar' : 'human'
+        );
+        socket.emit('createRoom', {
+          name: myPlayerName,
+          battleMode: isAvatarMode ? 'avatar' : 'human',
+          avatarPersonality: isAvatarMode ? buildPersonalityPayload() : null,
+          tournamentId,
+          tournamentMatchId: matchId,
+          roomCode,
+        });
+      };
 
-      socket.emit('createRoom', {
-        name: myPlayerName,
-        battleMode: isAvatarMode ? 'avatar' : 'human',
-        avatarPersonality: isAvatarMode ? buildPersonalityPayload() : null,
-        tournamentId,
-        tournamentMatchId: matchId,
-        roomCode,
-      });
+      emitCreateRoom();
 
       getTournamentFromServer({ tournamentId }).then((t) => {
         if (cancelled) return;
@@ -184,6 +211,26 @@ export default function TournamentMatchScreen() {
           console.log('[TOURNAMENT MATCH] initial state NULL — using default winTarget', DEFAULT_WIN_TARGET);
         }
       });
+
+      // Reconnect safety net: if the socket reconnects mid-match, we
+      // need to rejoin the room and re-sync state.
+      const onReconnect = () => {
+        if (cancelled) return;
+        console.log('[TOURNAMENT MATCH] socket reconnected — re-joining room');
+        mySocketIdRef.current = getSocket()?.id || '';
+        emitCreateRoom();
+        getTournamentFromServer({ tournamentId }).then((t) => {
+          if (cancelled || !t) return;
+          setTournament(t);
+          if (typeof t.winTarget === 'number') setWinTarget(t.winTarget);
+        });
+      };
+      socket.on('connect', onReconnect);
+
+      // Keep a handle so cleanup can remove it.
+      (setup as any).__cleanup = () => {
+        socket.off('connect', onReconnect);
+      };
     };
 
     setup();
@@ -195,19 +242,53 @@ export default function TournamentMatchScreen() {
       if (s) {
         s.emit('leaveMatchScreen', { roomCode });
       }
+      const c = (setup as any).__cleanup;
+      if (typeof c === 'function') c();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomCode, tournamentId, matchId]);
 
   // ─── Audio ───
+    // ─── Audio ───
   useEffect(() => {
     startGameMusic();
     return () => {
       stopMusic();
-      stopCelebration();
+      // Do NOT stop the celebration on unmount — the sequence plays
+      // to completion even after we navigate away.
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
   }, []);
+
+    // ─── If the match is already complete, leave immediately ───
+  // Handles the case where matchAssigned fires for a match that has
+  // already resolved on the server (fast rounds, or a reconnect).
+  useEffect(() => {
+    if (!tournament) return;
+    if (navigationScheduledRef.current) return;
+    const lastRound = tournament.rounds?.[tournament.rounds.length - 1];
+    if (!lastRound) return;
+    const m = lastRound.matches.find((x) => x.matchId === matchId);
+    if (!m) return;
+    if (m.status === 'complete' || m.winner) {
+      console.log('[TOURNAMENT MATCH] match already complete — leaving');
+      scheduleNavigation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tournament, matchId]);
+
+  // ─── Waiting timeout ───
+  // If we've been waiting for the opponent for 20 seconds with no
+  // other progress, surface a Leave Match button.
+  const [stuckWaiting, setStuckWaiting] = useState(false);
+  useEffect(() => {
+    if (!waiting) {
+      setStuckWaiting(false);
+      return;
+    }
+    const t = setTimeout(() => setStuckWaiting(true), 20000);
+    return () => clearTimeout(t);
+  }, [waiting]);
 
   useEffect(() => {
     if (winner) {
@@ -233,9 +314,11 @@ export default function TournamentMatchScreen() {
         setOpponentName(t.usernames[initialOpponentUserId]);
       }
     });
+
     const offScores = onTournamentScoresUpdate((payload) => {
       setScoresByMatch(payload);
     });
+
     const offCancelled = onMatchCancelled((data) => {
       console.log(
         '[TOURNAMENT MATCH] matchCancelled | reason:', data.reason,
@@ -245,15 +328,36 @@ export default function TournamentMatchScreen() {
       const iWon = data.winnerSocketId === mySocketIdRef.current;
       triggerMatchEnd(iWon);
     });
+
+    // If the round this match belongs to completes while we're still
+    // mounted, navigate back to the bracket. Catches the case where
+    // neither matchOver nor matchCancelled reached us.
+    const offRoundComplete = onRoundComplete((data) => {
+      console.log(
+        '[TOURNAMENT MATCH] roundComplete | round:', data.roundNumber,
+        '| nextRound:', data.nextRound
+      );
+      // We don't track which round our match belongs to on the client
+      // directly, but any roundComplete for this tournament while we're
+      // on the match screen means our match is done. Navigate back.
+      if (navigationScheduledRef.current) return;
+      console.log(
+        '[TOURNAMENT MATCH] roundComplete → scheduling navigation back'
+      );
+      scheduleNavigation();
+    });
+
     const offError = onTournamentError((err) => {
       console.log('[TOURNAMENT MATCH] server error:', err.action, err.message);
       setErrorBanner(err.message);
       setTimeout(() => setErrorBanner(''), 3500);
     });
+
     return () => {
       offState();
       offScores();
       offCancelled();
+      offRoundComplete();
       offError();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -468,22 +572,65 @@ export default function TournamentMatchScreen() {
     setOpponentRecentMoves([...oppList].reverse());
   };
 
-  const triggerMatchEnd = async (iWon: boolean) => {
-    if (navigatedAwayRef.current) return;
-    navigatedAwayRef.current = true;
+  // ─── Navigation scheduling ───
+  // Idempotent: only fires once. Navigation itself always runs even
+  // if navigatedAwayRef is already set from a previous triggerMatchEnd.
+    const scheduleNavigation = (delayMs: number = 1800) => {
+    if (navigationScheduledRef.current) {
+      console.log('[TOURNAMENT MATCH] navigation already scheduled — skipping');
+      return;
+    }
+    navigationScheduledRef.current = true;
 
-    console.log('[TOURNAMENT MATCH] triggerMatchEnd | iWon:', iWon);
-    setMatchOver(true);
-    setIWonMatch(iWon);
-    stopMusic();
-    try {
-      await playCelebrationSequence(iWon);
-    } catch {}
-
+    // Primary attempt.
     setTimeout(() => {
-      console.log('[TOURNAMENT MATCH] navigating back to bracket');
-      navigation.replace('TournamentBracket', { tournamentId });
-    }, 1800);
+      console.log('[TOURNAMENT MATCH] navigate attempt 1');
+      navigateBack();
+    }, delayMs);
+
+    // Fallback: if we're still mounted, navigate again.
+    // navigation.replace to the same screen is a no-op if already done.
+    setTimeout(() => {
+      console.log('[TOURNAMENT MATCH] navigate attempt 2 (fallback)');
+      navigateBack();
+    }, delayMs + 3200);
+  };
+
+    const triggerMatchEnd = async (iWon: boolean) => {
+    // Celebration / overlay only fires once.
+    if (!navigatedAwayRef.current) {
+      navigatedAwayRef.current = true;
+      console.log('[TOURNAMENT MATCH] triggerMatchEnd | iWon:', iWon);
+      setMatchOver(true);
+      setIWonMatch(iWon);
+      stopMusic();
+
+      // playCelebrationSequence resolves immediately (the sequence
+      // continues in the background). It calls onComplete when the
+      // full sequence finishes. Navigate at that point so the music
+      // plays uninterrupted.
+      playCelebrationSequence(iWon, () => {
+        console.log('[TOURNAMENT MATCH] celebration finished — navigating');
+        scheduleNavigation(0);
+      }).catch(() => {
+        // Fallback: navigate immediately if the sequence fails.
+        scheduleNavigation(0);
+      });
+
+      // Safety net in case onComplete never fires (rare).
+      setTimeout(() => {
+        if (navigationScheduledRef.current) return;
+        console.log('[TOURNAMENT MATCH] celebration onComplete timeout — navigating');
+        scheduleNavigation(0);
+      }, 8000);
+
+      return;
+    }
+
+    console.log(
+      '[TOURNAMENT MATCH] triggerMatchEnd — celebration already fired, only scheduling navigation'
+    );
+    scheduleNavigation();
   };
 
   const handleMove = (move: Move) => {
@@ -494,14 +641,20 @@ export default function TournamentMatchScreen() {
     setMyMove(move);
     playSound('click');
     if (vibrationEnabled) Vibration.vibrate(10);
+    console.log('[TOURNAMENT MATCH] makeMove emit | move:', move);
     socket.emit('makeMove', { move });
   };
 
   const handleLeave = () => {
-    if (navigatedAwayRef.current) return;
-    navigatedAwayRef.current = true;
-    stopCelebration();
-    navigation.replace('TournamentBracket', { tournamentId });
+    if (!navigatedAwayRef.current) {
+      navigatedAwayRef.current = true;
+      stopCelebration();
+    }
+    if (!navigationScheduledRef.current) {
+      navigationScheduledRef.current = true;
+      console.log('[TOURNAMENT MATCH] handleLeave — navigating back');
+      navigateBack();
+    }
   };
 
   const getResultText = () => {
@@ -521,22 +674,23 @@ export default function TournamentMatchScreen() {
   };
 
   const buildScoreEntries = (): ScoreEntry[] => {
-    if (!tournament) return [];
+    if (!tournament || !tournament.rounds?.length) return [];
+    const lastRound = tournament.rounds[tournament.rounds.length - 1];
+    if (!lastRound || !lastRound.matches?.length) return [];
     const entries: ScoreEntry[] = [];
-    const roundEntries = Object.entries(scoresByMatch);
-
-    for (const [mId, s] of roundEntries) {
+    for (const m of lastRound.matches) {
       entries.push({
-        matchId: mId,
-        p1UserId: s.p1,
-        p2UserId: s.p2,
-        p1Name: displayName(s.p1),
-        p2Name: displayName(s.p2),
-        p1Score: s.scores?.p1 ?? 0,
-        p2Score: s.scores?.p2 ?? 0,
-        p1Color: tournament.colorMap?.[s.p1] || null,
-        p2Color: tournament.colorMap?.[s.p2] || null,
-        status: s.status,
+        matchId: m.matchId,
+        p1UserId: m.p1,
+        p2UserId: m.p2,
+        p1Name: displayName(m.p1),
+        p2Name: displayName(m.p2),
+        p1Score: m.scores?.p1 ?? 0,
+        p2Score: m.scores?.p2 ?? 0,
+        p1Color: tournament.colorMap?.[m.p1] || null,
+        p2Color: tournament.colorMap?.[m.p2] || null,
+        status: m.status,
+        winnerUserId: m.winner || null,
       });
     }
     return entries;
@@ -553,9 +707,9 @@ export default function TournamentMatchScreen() {
             <Text style={styles.headerTitle}>
               {tournament?.name || 'Tournament Match'}
             </Text>
-            <Text style={styles.headerSubtitle}>
+                        <Text style={styles.headerSubtitle}>
               {isAvatarMode
-                ? '🤖 Avatar vs Avatar'
+                ? `🤖 Avatar Arena · First to ${winTarget}`
                 : `First to ${winTarget} wins`}
             </Text>
           </View>
@@ -705,7 +859,7 @@ export default function TournamentMatchScreen() {
           />
         )}
 
-        {matchOver && (
+                {matchOver && (
           <View style={styles.matchOverOverlay}>
             <View style={styles.matchOverContent}>
               <Text style={styles.matchOverEmoji}>{iWonMatch ? '🏆' : '💀'}</Text>
@@ -723,7 +877,38 @@ export default function TournamentMatchScreen() {
               <Text style={styles.matchOverSub}>
                 Returning to bracket…
               </Text>
+
+              <TouchableOpacity
+                style={styles.forceReturnBtn}
+                onPress={() => {
+                  console.log('[TOURNAMENT MATCH] user tapped Return to Bracket');
+                  navigateBack();
+                }}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.forceReturnBtnText}>
+                  Return to Bracket
+                </Text>
+              </TouchableOpacity>
             </View>
+          </View>
+        )}
+
+        {stuckWaiting && !matchOver && (
+          <View style={styles.stuckBanner}>
+            <Text style={styles.stuckBannerText}>
+              Still waiting for opponent…
+            </Text>
+            <TouchableOpacity
+              style={styles.leaveStuckBtn}
+              onPress={() => {
+                console.log('[TOURNAMENT MATCH] user tapped Leave Match');
+                handleLeave();
+              }}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.leaveStuckBtnText}>Leave Match</Text>
+            </TouchableOpacity>
           </View>
         )}
       </SafeAreaView>
@@ -890,11 +1075,58 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     marginTop: 4,
   },
-  matchOverSub: {
+    matchOverSub: {
     fontSize: 12,
     color: '#5a5a7a',
     fontWeight: '700',
     marginTop: 12,
     letterSpacing: 0.5,
+  },
+  forceReturnBtn: {
+    marginTop: 24,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    backgroundColor: '#e94560',
+  },
+  forceReturnBtnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: 0.3,
+  },
+  stuckBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: 90,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: 'rgba(251, 191, 36, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.35)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    zIndex: 900,
+  },
+  stuckBannerText: {
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+  },
+  leaveStuckBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#fbbf24',
+  },
+  leaveStuckBtnText: {
+    color: '#000000',
+    fontSize: 12,
+    fontWeight: '800',
   },
 });
