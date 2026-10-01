@@ -1,15 +1,9 @@
-// src/screens/OnlineModeScreen.tsx
+// src/screens/TournamentEntryScreen.tsx
 //
-// RPS Arena — Online mode selection.
+// RPS Arena — Tournament Mode entry.
 //
-// Chat 11 adds a third card: Tournament Mode. Tapping it navigates
-// to TournamentEntry, where the user picks Human vs Human or
-// Avatar vs Avatar tournaments. No battleStore.setMode call — the
-// tournament type is chosen on the config screen and stored on the
-// tournament row itself (STEP 4).
-//
-// Wrapped in ScreenScroll so all three cards are reachable on
-// short phones.
+// Wrapped in ScreenScroll so the three actions (Human / Avatar /
+// Join with Code) are always reachable on short phones.
 
 import React, { useEffect } from 'react';
 import {
@@ -20,32 +14,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
-import { ChevronLeft, Users, Swords, Trophy } from 'lucide-react-native';
+import { ChevronLeft, Users, Swords, LogIn, Trophy } from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
 import { startMenuMusic } from '../services/audio';
-import { useBattleStore } from '../store/battleStore';
 
-export default function OnlineModeScreen() {
+export default function TournamentEntryScreen() {
   const navigation = useNavigation<any>();
-  const setMode = useBattleStore((s) => s.setMode);
 
   useEffect(() => {
     startMenuMusic();
   }, []);
 
-  const goHuman = () => {
-    setMode('human');
-    navigation.navigate('OnlineLobby');
+  const goHumanTournament = () => {
+    navigation.navigate('TournamentConfig', { type: 'human' });
   };
 
-  const goAvatar = () => {
-    setMode('avatar');
-    navigation.navigate('OnlineLobby');
+  const goAvatarTournament = () => {
+    navigation.navigate('TournamentConfig', { type: 'avatar' });
   };
 
-  const goTournament = () => {
-    navigation.navigate('TournamentEntry');
+  const goJoin = () => {
+    navigation.navigate('TournamentJoin');
   };
 
   return (
@@ -58,16 +48,16 @@ export default function OnlineModeScreen() {
           >
             <ChevronLeft size={26} color="#e94560" />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>🌐 Online</Text>
+          <Text style={styles.headerTitle}>🏆 Tournament</Text>
           <View style={styles.headerBtn} />
         </View>
 
         <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
-          <Text style={styles.title}>Choose Battle Mode</Text>
+          <Text style={styles.title}>Choose Tournament Type</Text>
 
           <TouchableOpacity
             style={[styles.modeCard, { borderColor: 'rgba(79, 172, 254, 0.4)' }]}
-            onPress={goHuman}
+            onPress={goHumanTournament}
             activeOpacity={0.8}
           >
             <View
@@ -78,15 +68,19 @@ export default function OnlineModeScreen() {
             >
               <Users size={32} color="#4facfe" />
             </View>
-            <Text style={styles.modeTitle}>Human vs Human</Text>
+            <View style={styles.titleRow}>
+              <Trophy size={14} color="#4facfe" />
+              <Text style={styles.modeTitle}>Human vs Human</Text>
+            </View>
             <Text style={styles.modeDesc}>
-              Play against real players. You pick, they pick, winner takes it.
+              Bracket of real players. Random re-pairing each round.
+              First to the win target advances.
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={[styles.modeCard, { borderColor: 'rgba(167, 139, 250, 0.4)' }]}
-            onPress={goAvatar}
+            onPress={goAvatarTournament}
             activeOpacity={0.8}
           >
             <View
@@ -97,30 +91,29 @@ export default function OnlineModeScreen() {
             >
               <Swords size={32} color="#a78bfa" />
             </View>
-            <Text style={styles.modeTitle}>Avatar Arena</Text>
+            <View style={styles.titleRow}>
+              <Trophy size={14} color="#a78bfa" />
+              <Text style={styles.modeTitle}>Avatar vs Avatar</Text>
+            </View>
             <Text style={styles.modeDesc}>
-              Watch your trained AI battle theirs. No buttons — just strategy.
+              Your trained AI battles theirs. Watch the bracket unfold
+              — no buttons, just strategy.
             </Text>
           </TouchableOpacity>
 
+          <View style={styles.divider}>
+            <View style={styles.dividerLine} />
+            <Text style={styles.dividerText}>OR</Text>
+            <View style={styles.dividerLine} />
+          </View>
+
           <TouchableOpacity
-            style={[styles.modeCard, { borderColor: 'rgba(250, 204, 21, 0.4)' }]}
-            onPress={goTournament}
+            style={styles.secondaryAction}
+            onPress={goJoin}
             activeOpacity={0.8}
           >
-            <View
-              style={[
-                styles.iconWrap,
-                { backgroundColor: 'rgba(250, 204, 21, 0.15)' },
-              ]}
-            >
-              <Trophy size={32} color="#facc15" />
-            </View>
-            <Text style={styles.modeTitle}>Tournament Mode</Text>
-            <Text style={styles.modeDesc}>
-              Bracket of up to 32 players. Random re-pairing each round,
-              live scores, and a champion takes the crown.
-            </Text>
+            <LogIn size={20} color="#facc15" />
+            <Text style={styles.secondaryActionText}>Join with Code</Text>
           </TouchableOpacity>
         </ScreenScroll>
       </SafeAreaView>
@@ -143,7 +136,9 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 16, fontWeight: '700', color: '#ffffff' },
 
   scrollContent: {
-    padding: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 40,
     gap: 16,
   },
   title: {
@@ -169,6 +164,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   modeTitle: {
     fontSize: 20,
     fontWeight: '800',
@@ -180,5 +180,38 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     paddingHorizontal: 12,
+  },
+  divider: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 4,
+    gap: 12,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  dividerText: {
+    color: '#5a5a7a',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  secondaryAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(250, 204, 21, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(250, 204, 21, 0.3)',
+    padding: 14,
+    borderRadius: 12,
+  },
+  secondaryActionText: {
+    color: '#facc15',
+    fontSize: 15,
+    fontWeight: '700',
   },
 });

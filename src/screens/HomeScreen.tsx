@@ -1,3 +1,17 @@
+// src/screens/HomeScreen.tsx
+//
+// RPS Arena — home.
+//
+// Chat 11 — registration gate:
+//   Guests can use all offline features (Player vs AI, Local
+//   Multiplayer, My Avatar, Training Lab, AI Dojo). Online
+//   Multiplayer and Leaderboard require a registered account, and
+//   the upgrade banner reflects this: guests see "Sign in" and are
+//   routed to Login with a returnTo back to Home; registered
+//   non-premium users see the existing premium upsell.
+//
+// APK: platform-agnostic. No web-only APIs.
+
 import React, { useEffect } from 'react';
 import {
   View,
@@ -27,16 +41,18 @@ import ScreenScroll from '../components/ScreenScroll';
 import NotificationBell from '../components/notificationBell';
 import HomeStatsCard from '../components/HomeStatsCard';
 import GuestBanner from '../components/GuestBanner';
-import { SPACE_ACCENTS, COSMIC_THEME } from '../theme/spaceColors';
+import { SPACE_ACCENTS } from '../theme/spaceColors';
 import { startMenuMusic } from '../services/audio';
 import { useAvatarStore } from '../store/avatarStore';
 import { usePremiumStore } from '../store/premiumStore';
+import { useUserStore } from '../store/userStore';
 import { getRatingTier } from '../engine/AvatarEngine';
 
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
   const { getSelectedAvatar, getRecentMatches, loaded } = useAvatarStore();
   const { isPremium } = usePremiumStore();
+  const { isAnonymous } = useUserStore();
   const avatar = getSelectedAvatar();
   const recentMatches = getRecentMatches(3);
   const premium = isPremium();
@@ -54,6 +70,7 @@ export default function HomeScreen() {
       subtitle: 'Challenge the adaptive computer',
       mode: 'pvc',
       premiumOnly: false,
+      requiresAuth: false,
     },
     {
       id: 'pvp',
@@ -63,6 +80,7 @@ export default function HomeScreen() {
       subtitle: 'Play on the same device',
       mode: 'pvp',
       premiumOnly: false,
+      requiresAuth: false,
     },
     {
       id: 'online',
@@ -72,6 +90,7 @@ export default function HomeScreen() {
       subtitle: 'Challenge players worldwide',
       screen: 'OnlineLobby',
       premiumOnly: true,
+      requiresAuth: true,
     },
     {
       id: 'profile',
@@ -81,6 +100,7 @@ export default function HomeScreen() {
       subtitle: 'Customize your AI champion',
       screen: 'Profile',
       premiumOnly: false,
+      requiresAuth: false,
     },
     {
       id: 'training',
@@ -90,6 +110,7 @@ export default function HomeScreen() {
       subtitle: 'Tune your AI personality',
       screen: 'Training',
       premiumOnly: false,
+      requiresAuth: false,
     },
     {
       id: 'dojo',
@@ -99,6 +120,7 @@ export default function HomeScreen() {
       subtitle: 'Face the 4 masters',
       screen: 'AIDojo',
       premiumOnly: false,
+      requiresAuth: false,
     },
     {
       id: 'leaderboard',
@@ -116,11 +138,27 @@ export default function HomeScreen() {
       subtitle: 'Rankings & match history',
       screen: 'Leaderboard',
       premiumOnly: true,
+      requiresAuth: true,
     },
   ];
 
+  const goToLogin = (returnTo: string) => {
+    (navigation.navigate as any)('Login', {
+      returnTo,
+      returnParams: undefined,
+    });
+  };
+
   const handlePress = (item: typeof menuItems[0]) => {
-    if (item.premiumOnly && !premium) {
+    const needsAuth = item.requiresAuth && isAnonymous;
+    const needsPremium =
+      item.premiumOnly && !premium && !isAnonymous;
+
+    if (needsAuth) {
+      goToLogin('Home');
+      return;
+    }
+    if (needsPremium) {
       navigation.navigate('Premium');
       return;
     }
@@ -138,10 +176,17 @@ export default function HomeScreen() {
 
   const tier = avatar ? getRatingTier(avatar.rating) : null;
 
+  // Banner shown above the grid. Only one variant renders at a time:
+  //   - Guest:  "Sign in to play online & save progress" → Login
+  //   - Reg non-premium: existing premium upsell → Premium
+  //   - Premium: no banner
+  const showGuestBanner = isAnonymous;
+  const showPremiumUpsell = !isAnonymous && !premium;
+
   const content = (
     <>
-    <GuestBanner />
-    
+      <GuestBanner />
+
       {loaded && avatar && (
         <TouchableOpacity
           style={styles.streakBar}
@@ -149,7 +194,10 @@ export default function HomeScreen() {
           activeOpacity={0.7}
         >
           {avatar.image?.type === 'custom' ? (
-            <Image source={{ uri: avatar.image.value }} style={styles.streakImage} />
+            <Image
+              source={{ uri: avatar.image.value }}
+              style={styles.streakImage}
+            />
           ) : (
             <Text style={styles.streakEmoji}>{avatar.emoji}</Text>
           )}
@@ -199,21 +247,41 @@ export default function HomeScreen() {
       {/* Feature A (Chat 8) — server-backed quick stats card */}
       <HomeStatsCard accent="#a78bfa" />
 
-      {!premium && (
+      {showGuestBanner && (
+        <TouchableOpacity
+          style={styles.upgradeBanner}
+          onPress={() => goToLogin('Home')}
+          activeOpacity={0.8}
+        >
+          <Lock size={16} color="#fbbf24" />
+          <Text style={styles.upgradeText}>
+            Sign in to play online & save progress
+          </Text>
+          <Text style={styles.upgradeArrow}>→</Text>
+        </TouchableOpacity>
+      )}
+
+      {showPremiumUpsell && (
         <TouchableOpacity
           style={styles.upgradeBanner}
           onPress={() => navigation.navigate('Premium')}
           activeOpacity={0.8}
         >
           <Crown size={16} color="#fbbf24" />
-          <Text style={styles.upgradeText}>Unlock Online Play & Leaderboard</Text>
+          <Text style={styles.upgradeText}>
+            Unlock Online Play & Leaderboard
+          </Text>
           <Text style={styles.upgradeArrow}>→</Text>
         </TouchableOpacity>
       )}
 
       <View style={styles.grid}>
         {menuItems.map((item, index) => {
-          const locked = item.premiumOnly && !premium;
+          const needsAuth = item.requiresAuth && isAnonymous;
+          const needsPremium =
+            item.premiumOnly && !premium && !isAnonymous;
+          const locked = needsAuth || needsPremium;
+
           return (
             <View key={item.id} style={styles.panelWrap}>
               <FloatingPanel
@@ -362,7 +430,12 @@ const styles = StyleSheet.create({
   streakImage: { width: 30, height: 30, borderRadius: 15 },
   streakInfo: { flex: 1 },
   streakName: { fontSize: 13, fontWeight: '700', color: '#ffffff' },
-  streakMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  streakMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
   streakTier: { fontSize: 10, fontWeight: '700' },
   streakDot: { fontSize: 10, color: '#3a3a4a' },
   streakMetaText: { fontSize: 10, color: '#8a8a9a', fontWeight: '600' },

@@ -9,8 +9,20 @@
 //   - createAvatarOnServer no longer sends an `id`. The server
 //     generates the UUID (fixes "invalid input syntax for type uuid").
 //   - New checkUsernameAvailabilityOnServer(username).
-//   - New onUsernameAvailability listener? No — that's a one-shot
-//     response. See checkUsernameAvailabilityOnServer.
+// Chat 11: tournament socket helpers + types.
+// Chat 11b (debug pass):
+//   - onTournamentError: subscribe to server-side tournament errors.
+//   - onMatchCancelled: subscribe to match cancellation events.
+//   - [TOURNAMENT CLIENT] logs on every tournament emit and receive
+//     so client and server logs can be correlated.
+//   - getTournamentFromServer logs the emit and result, since a null
+//     state is the most common cause of tournament client failures.
+//
+// IMPORTANT: tournament screens must call getSocket() first and only
+// fall back to connectToServer if no socket is connected. Calling
+// connectToServer while a socket exists calls removeAllListeners()
+// and disconnects, which would kill listeners on other mounted
+// screens. See connectToServer below.
 
 import { io, Socket } from 'socket.io-client';
 import { UserIdentity } from './identity';
@@ -233,7 +245,7 @@ export function changeUsernameOnServer(
 }
 
 // ============================================================
-// CHECK USERNAME AVAILABILITY (Chat 9d — new)
+// CHECK USERNAME AVAILABILITY (Chat 9d)
 // ============================================================
 export function checkUsernameAvailabilityOnServer(
   username: string
@@ -577,7 +589,6 @@ export function getAvatarsFromServer(): Promise<ServerAvatar[]> {
   });
 }
 
-// CHAT 9d: no longer sends `id`. Server generates the UUID.
 export function createAvatarOnServer(avatar: {
   name: string;
   emoji: string;
@@ -885,5 +896,577 @@ export function onAchievementUnlocked(
 
   return () => {
     socket?.off('achievementUnlocked', handler);
+  };
+}
+
+// ============================================================
+// TOURNAMENTS (Chat 11)
+// ============================================================
+
+export type TournamentType = 'human' | 'avatar';
+export type TournamentStatus = 'lobby' | 'live' | 'finished';
+
+export interface TournamentConfig {
+  type: TournamentType;
+  maxPlayers: number;   // 2..32
+  winTarget: number;    // 15..30
+  autoAdvance: boolean;
+  name?: string | null;
+  isPrivate?: boolean;
+}
+
+export interface TournamentMatch {
+  matchId: string;
+  p1: string;
+  p2: string;
+  roomCode: string | null;
+  winner: string | null;
+  status: 'pending' | 'active' | 'complete';
+  scores: { p1: number; p2: number; round: number };
+}
+
+export interface TournamentRound {
+  roundNumber: number;
+  bye: string | null;
+  status: 'pending' | 'active' | 'complete';
+  matches: TournamentMatch[];
+}
+
+export interface Tournament {
+  id: string;
+  code: string;
+  hostId: string;
+  type: TournamentType;
+  maxPlayers: number;
+  winTarget: number;
+  autoAdvance: boolean;
+  name: string | null;
+  isPrivate: boolean;
+  status: TournamentStatus;
+  currentRound: number;
+  colorMap: Record<string, string>;
+  players: string[];
+  winnerId: string | null;
+  usernames: Record<string, string>;
+  activeUserIds: string[];
+  activeSecondsLeft: number;
+  rounds: TournamentRound[];
+}
+
+export interface TournamentRewards {
+  [userId: string]: {
+    ratingDelta: number;
+    xpDelta: number;
+    title: string | null;
+  };
+}
+
+export interface TournamentErrorPayload {
+  action: string;
+  message: string;
+}
+
+// ────────────────────────────────────────────────────────────
+// One-shot request / response
+// ────────────────────────────────────────────────────────────
+
+export function createTournamentOnServer(
+  cfg: TournamentConfig
+): Promise<{ success: boolean; tournamentId?: string; code?: string; message?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      console.log('[TOURNAMENT CLIENT] create — not connected');
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+    console.log(
+      '[TOURNAMENT CLIENT] create emit | socket:', socket.id,
+      '| cfg:', JSON.stringify(cfg)
+    );
+
+    let done = false;
+
+    const onCreated = (data: { tournamentId: string; code: string }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('tournamentCreated', onCreated);
+      socket?.off('tournamentError', onError);
+      console.log(
+        '[TOURNAMENT CLIENT] create recv tournamentCreated |',
+        data.tournamentId, data.code
+      );
+      resolve({ success: true, tournamentId: data.tournamentId, code: data.code });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'create') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('tournamentCreated', onCreated);
+      socket?.off('tournamentError', onError);
+      console.log('[TOURNAMENT CLIENT] create recv tournamentError |', err?.message);
+      resolve({ success: false, message: err?.message || 'Create failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('tournamentCreated', onCreated);
+      socket?.off('tournamentError', onError);
+      console.log('[TOURNAMENT CLIENT] create — timeout');
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('tournamentCreated', onCreated);
+    socket.on('tournamentError', onError);
+    socket.emit('createTournament', cfg);
+  });
+}
+
+export function joinTournamentOnServer(
+  code: string
+): Promise<{
+  success: boolean;
+  tournamentId?: string;
+  code?: string;
+  message?: string;
+}> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      console.log('[TOURNAMENT CLIENT] join — not connected');
+      resolve({ success: false, message: 'Not connected to server' });
+      return;
+    }
+    console.log(
+      '[TOURNAMENT CLIENT] join emit | socket:', socket.id,
+      '| code:', code
+    );
+
+    let done = false;
+
+    const onJoined = (data: { tournamentId: string; code: string }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('tournamentJoined', onJoined);
+      socket?.off('tournamentError', onError);
+      console.log(
+        '[TOURNAMENT CLIENT] join recv tournamentJoined |',
+        data.tournamentId, data.code
+      );
+      resolve({ success: true, tournamentId: data.tournamentId, code: data.code });
+    };
+
+    const onError = (err: { action?: string; message?: string }) => {
+      if (done) return;
+      if (err?.action && err.action !== 'join') return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('tournamentJoined', onJoined);
+      socket?.off('tournamentError', onError);
+      console.log('[TOURNAMENT CLIENT] join recv tournamentError |', err?.message);
+      resolve({ success: false, message: err?.message || 'Join failed' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('tournamentJoined', onJoined);
+      socket?.off('tournamentError', onError);
+      console.log('[TOURNAMENT CLIENT] join — timeout');
+      resolve({ success: false, message: 'Server did not respond' });
+    }, 8000);
+
+    socket.on('tournamentJoined', onJoined);
+    socket.on('tournamentError', onError);
+    socket.emit('joinTournament', { code });
+  });
+}
+
+export function leaveTournamentOnServer(tournamentId: string): void {
+  if (!socket?.connected) return;
+  console.log('[TOURNAMENT CLIENT] leave emit |', tournamentId);
+  socket.emit('leaveTournament', { tournamentId });
+}
+
+export function pressActiveOnServer(tournamentId: string): void {
+  if (!socket?.connected) return;
+  console.log('[TOURNAMENT CLIENT] pressActive emit |', tournamentId);
+  socket.emit('pressActive', { tournamentId });
+}
+
+export function startTournamentOnServer(tournamentId: string): void {
+  if (!socket?.connected) return;
+  console.log('[TOURNAMENT CLIENT] start emit |', tournamentId);
+  socket.emit('startTournament', { tournamentId });
+}
+
+export function beginNextRoundOnServer(tournamentId: string): void {
+  if (!socket?.connected) return;
+  console.log('[TOURNAMENT CLIENT] beginNextRound emit |', tournamentId);
+  socket.emit('beginNextRound', { tournamentId });
+}
+
+export function getTournamentFromServer(params: {
+  tournamentId?: string;
+  code?: string;
+}): Promise<Tournament | null> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      console.log('[TOURNAMENT CLIENT] getTournament — not connected');
+      resolve(null);
+      return;
+    }
+    console.log(
+      '[TOURNAMENT CLIENT] getTournament emit | socket:', socket.id,
+      '| params:', JSON.stringify(params)
+    );
+
+    let done = false;
+
+    const handler = (data: Tournament | null) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('tournamentState', handler);
+      if (data) {
+        console.log(
+          '[TOURNAMENT CLIENT] getTournament recv | id:', data.id,
+          '| status:', data.status,
+          '| round:', data.currentRound,
+          '| players:', data.players?.length ?? 0,
+          '| winTarget:', data.winTarget
+        );
+      } else {
+        console.log('[TOURNAMENT CLIENT] getTournament recv null state');
+      }
+      resolve(data || null);
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('tournamentState', handler);
+      console.log('[TOURNAMENT CLIENT] getTournament — timeout (no state received)');
+      resolve(null);
+    }, 6000);
+
+    socket.on('tournamentState', handler);
+    socket.emit('getTournament', params);
+  });
+}
+
+// ────────────────────────────────────────────────────────────
+// Subscriptions — one per server → client broadcast.
+// Every helper returns an unsubscribe function.
+// ────────────────────────────────────────────────────────────
+
+export function onTournamentState(
+  callback: (state: Tournament) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (state: Tournament | null) => {
+    if (state) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv tournamentState | status:', state.status,
+        '| round:', state.currentRound,
+        '| players:', state.players?.length ?? 0,
+        '| activeSet:', state.activeUserIds?.length ?? 0,
+        '| activeSecondsLeft:', state.activeSecondsLeft
+      );
+      callback(state);
+    }
+  };
+  socket.on('tournamentState', handler);
+  return () => {
+    socket?.off('tournamentState', handler);
+  };
+}
+
+export function onTournamentStarted(
+  callback: (data: { colorMap: Record<string, string> }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: { colorMap: Record<string, string> }) => {
+    if (data?.colorMap) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv tournamentStarted | colors:',
+        Object.keys(data.colorMap).length
+      );
+      callback(data);
+    }
+  };
+  socket.on('tournamentStarted', handler);
+  return () => {
+    socket?.off('tournamentStarted', handler);
+  };
+}
+
+export interface RoundStartedPayload {
+  roundNumber: number;
+  bye: string | null;
+  matches: {
+    matchId: string;
+    p1: string;
+    p2: string;
+    roomCode: string | null;
+    status: 'pending' | 'active' | 'complete';
+  }[];
+  activeWindowMs?: number;
+}
+
+export function onRoundStarted(
+  callback: (payload: RoundStartedPayload) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (payload: RoundStartedPayload) => {
+    if (payload?.roundNumber) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv roundStarted | round:', payload.roundNumber,
+        '| matches:', payload.matches?.length ?? 0,
+        '| bye:', payload.bye,
+        '| windowMs:', payload.activeWindowMs
+      );
+      callback(payload);
+    }
+  };
+  socket.on('roundStarted', handler);
+  return () => {
+    socket?.off('roundStarted', handler);
+  };
+}
+
+export function onActiveWindowUpdate(
+  callback: (data: { secondsLeft: number }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: { secondsLeft: number }) => {
+    if (typeof data?.secondsLeft === 'number') {
+      // Log only every 10s to avoid drowning the console.
+      if (data.secondsLeft % 10 === 0 || data.secondsLeft <= 5) {
+        console.log(
+          '[TOURNAMENT CLIENT] recv activeWindowUpdate | secondsLeft:',
+          data.secondsLeft
+        );
+      }
+      callback(data);
+    }
+  };
+  socket.on('activeWindowUpdate', handler);
+  return () => {
+    socket?.off('activeWindowUpdate', handler);
+  };
+}
+
+export function onPlayerActive(
+  callback: (data: { userId: string; color: string | null }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: { userId: string; color: string | null }) => {
+    if (data?.userId) {
+      console.log('[TOURNAMENT CLIENT] recv playerActive | userId:', data.userId);
+      callback(data);
+    }
+  };
+  socket.on('playerActive', handler);
+  return () => {
+    socket?.off('playerActive', handler);
+  };
+}
+
+export function onPlayerInactive(
+  callback: (data: { userId: string; reason: string }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: { userId: string; reason: string }) => {
+    if (data?.userId) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv playerInactive | userId:', data.userId,
+        '| reason:', data.reason
+      );
+      callback(data);
+    }
+  };
+  socket.on('playerInactive', handler);
+  return () => {
+    socket?.off('playerInactive', handler);
+  };
+}
+
+export function onHostChanged(
+  callback: (data: { newHostId: string }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: { newHostId: string }) => {
+    if (data?.newHostId) {
+      console.log('[TOURNAMENT CLIENT] recv hostChanged | newHost:', data.newHostId);
+      callback(data);
+    }
+  };
+  socket.on('hostChanged', handler);
+  return () => {
+    socket?.off('hostChanged', handler);
+  };
+}
+
+export function onMatchAssigned(
+  callback: (data: {
+    matchId: string;
+    roomCode: string;
+    opponentUserId: string;
+  }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: {
+    matchId: string;
+    roomCode: string;
+    opponentUserId: string;
+  }) => {
+    if (data?.matchId && data?.roomCode) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv matchAssigned | match:', data.matchId,
+        '| room:', data.roomCode,
+        '| opponent:', data.opponentUserId
+      );
+      callback(data);
+    }
+  };
+  socket.on('matchAssigned', handler);
+  return () => {
+    socket?.off('matchAssigned', handler);
+  };
+}
+
+export interface TournamentScoresPayload {
+  [matchId: string]: {
+    p1: string;
+    p2: string;
+    scores: { p1: number; p2: number; round: number };
+    round: number;
+    status: 'pending' | 'active' | 'complete';
+  };
+}
+
+export function onTournamentScoresUpdate(
+  callback: (scores: TournamentScoresPayload) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (scores: TournamentScoresPayload) => {
+    if (scores && typeof scores === 'object') {
+      console.log(
+        '[TOURNAMENT CLIENT] recv tournamentScoresUpdate | matches:',
+        Object.keys(scores).length
+      );
+      callback(scores);
+    }
+  };
+  socket.on('tournamentScoresUpdate', handler);
+  return () => {
+    socket?.off('tournamentScoresUpdate', handler);
+  };
+}
+
+export function onRoundComplete(
+  callback: (data: {
+    roundNumber: number;
+    winners: string[];
+    nextRound: number | null;
+  }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: {
+    roundNumber: number;
+    winners: string[];
+    nextRound: number | null;
+  }) => {
+    if (typeof data?.roundNumber === 'number') {
+      console.log(
+        '[TOURNAMENT CLIENT] recv roundComplete | round:', data.roundNumber,
+        '| winners:', data.winners?.length ?? 0,
+        '| nextRound:', data.nextRound
+      );
+      callback(data);
+    }
+  };
+  socket.on('roundComplete', handler);
+  return () => {
+    socket?.off('roundComplete', handler);
+  };
+}
+
+export function onTournamentComplete(
+  callback: (data: {
+    winnerId: string | null;
+    rewards: TournamentRewards;
+  }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: {
+    winnerId: string | null;
+    rewards: TournamentRewards;
+  }) => {
+    if (data && (data.winnerId !== undefined)) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv tournamentComplete | winner:', data.winnerId,
+        '| rewards:', Object.keys(data.rewards || {}).length
+      );
+      callback(data);
+    }
+  };
+  socket.on('tournamentComplete', handler);
+  return () => {
+    socket?.off('tournamentComplete', handler);
+  };
+}
+
+// NEW: server-side tournament errors.
+export function onTournamentError(
+  callback: (err: TournamentErrorPayload) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (err: TournamentErrorPayload) => {
+    if (err && typeof err.message === 'string') {
+      console.log(
+        '[TOURNAMENT CLIENT] recv tournamentError | action:', err.action,
+        '| message:', err.message
+      );
+      callback(err);
+    }
+  };
+  socket.on('tournamentError', handler);
+  return () => {
+    socket?.off('tournamentError', handler);
+  };
+}
+
+// NEW: match cancelled by the tournament engine (walkover, active
+// timeout). Emitted to the room by _cancelTournamentRoom.
+export function onMatchCancelled(
+  callback: (data: {
+    winnerId: string | null;
+    winnerSocketId: string | null;
+    reason: string;
+  }) => void
+): () => void {
+  if (!socket) return () => {};
+  const handler = (data: {
+    winnerId: string | null;
+    winnerSocketId: string | null;
+    reason: string;
+  }) => {
+    if (data) {
+      console.log(
+        '[TOURNAMENT CLIENT] recv matchCancelled | winner:', data.winnerId,
+        '| winnerSocket:', data.winnerSocketId,
+        '| reason:', data.reason
+      );
+      callback(data);
+    }
+  };
+  socket.on('matchCancelled', handler);
+  return () => {
+    socket?.off('matchCancelled', handler);
   };
 }

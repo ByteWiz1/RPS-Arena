@@ -20,9 +20,29 @@
 //
 // All pre-existing effects (roomReady navigation, notifications,
 // achievements, online users) are structurally unchanged.
+//
+// Chat 11 — deep link:
+//   - New effects read ?tournament=CODE on web and rpsarena://join/CODE
+//     on native, and route into TournamentJoin with the code pre-filled.
+//     Guests are routed through Login first, then returned to Join.
+//   - Navigation targets Login / TournamentJoin with `as never` casts
+//     because RootStackParamList still types them as `undefined` until
+//     AppNavigator.tsx gains the extended param shapes (later file in
+//     this same pass).
+//
+// APK: uses Linking.getInitialURL() and Linking.addEventListener('url')
+//   on native. Requires `scheme` + Android intent filter in app.json
+//   (handled in a later file). Web path is guarded by Platform.OS.
 
 import React, { useEffect, useRef, useCallback } from 'react';
-import { StatusBar, StyleSheet, Platform, View, Alert } from 'react-native';
+import {
+  StatusBar,
+  StyleSheet,
+  Platform,
+  View,
+  Alert,
+  Linking,
+} from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator, { navigationRef } from './src/navigation/AppNavigator';
@@ -81,6 +101,8 @@ export default function App() {
   const bootRef = useRef(false);
   // Prevents double-identify on a single connect.
   const identifiedRef = useRef(false);
+  // Prevents the deep-link effect from firing more than once per launch.
+  const deepLinkHandledRef = useRef(false);
   // Ref to hold the current user's identity object for effect deps.
   const { identity, authReady } = useUserStore();
 
@@ -686,6 +708,103 @@ export default function App() {
     return () => {
       sub?.data?.subscription?.unsubscribe?.();
     };
+  }, []);
+
+  // ─── DEEP LINK (web + APK) ───
+  // Reads the incoming tournament link and routes the user into
+  // TournamentJoin with the code pre-filled. Guests are routed through
+  // Login first, then returned to Join after sign-in.
+  //
+  // Web:  <origin>/?tournament=CODE
+  // APK:  rpsarena://join/CODE (initial URL or tapped while running)
+  //
+  // Runs once per launch, after authReady + identity resolve.
+  useEffect(() => {
+    if (!authReady || !identity) return;
+    if (deepLinkHandledRef.current) return;
+    deepLinkHandledRef.current = true;
+
+    const readCode = async (): Promise<string | null> => {
+      try {
+        if (Platform.OS === 'web') {
+          const search = (globalThis as any)?.location?.search || '';
+          const m = String(search).match(/[?&]tournament=([A-Z0-9]{6})/i);
+          return m ? m[1].toUpperCase() : null;
+        }
+        const initial = await Linking.getInitialURL();
+        if (!initial) return null;
+        const raw = String(initial);
+        const m =
+          raw.match(/[?&]tournament=([A-Z0-9]{6})/i) ||
+          raw.match(/\/join\/([A-Z0-9]{6})/i);
+        return m ? m[1].toUpperCase() : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const navigateWithCode = (code: string) => {
+      const isGuest = useUserStore.getState().isAnonymous;
+      if (isGuest) {
+        console.log('[APP] Deep link — guest, routing via Login:', code);
+        (navigationRef.navigate as any)(
+  'Login',
+  { returnTo: 'TournamentJoin', returnParams: { code } }
+);
+      } else {
+        console.log('[APP] Deep link — registered, routing to Join:', code);
+        (navigationRef.navigate as any)('TournamentJoin', { code });
+      }
+    };
+
+    (async () => {
+      const code = await readCode();
+      if (!code) return;
+
+      // Wait for navigationRef to be ready (it mounts with the navigator).
+      const tryNavigate = (attempt = 0) => {
+        if (!navigationRef.isReady()) {
+          if (attempt > 20) return; // ~2s max
+          setTimeout(() => tryNavigate(attempt + 1), 100);
+          return;
+        }
+        navigateWithCode(code);
+      };
+
+      tryNavigate();
+    })();
+  }, [authReady, identity]);
+
+  // ─── DEEP LINK: runtime (APK) ───
+  // Listens for URLs tapped while the app is already open. Web is a
+  // no-op because the browser reloads the page for a new URL, which
+  // re-runs the initial-URL effect above.
+  useEffect(() => {
+    if (Platform.OS === 'web') return;
+
+    const sub = Linking.addEventListener('url', (event) => {
+      try {
+        const raw = String(event?.url || '');
+        const m =
+          raw.match(/[?&]tournament=([A-Z0-9]{6})/i) ||
+          raw.match(/\/join\/([A-Z0-9]{6})/i);
+        if (!m) return;
+        const code = m[1].toUpperCase();
+        if (!navigationRef.isReady()) return;
+
+        const isGuest = useUserStore.getState().isAnonymous;
+        if (isGuest) {
+          (navigationRef.navigate as any)(
+  'Login',
+  { returnTo: 'TournamentJoin', returnParams: { code } }
+);
+        } else {
+          (navigationRef.navigate as any)('TournamentJoin', { code });
+        }
+      } catch {}
+    });
+
+    return () => sub?.remove?.();
   }, []);
 
   // Cleanup avatar subscription on unmount.

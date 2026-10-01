@@ -7,12 +7,17 @@
 //   1. signInWithEmail() — establishes the Supabase session.
 //   2. userStore.bootstrapAuth() — reloads profile + store.
 //   3. Reconnect socket with the fresh JWT (disconnect + reconnect).
-//   4. Navigate home.
+//   4. Navigate to returnTo (if provided) or Home.
 //
 // Reachable from:
 //   - SettingsScreen "Sign in" (anonymous users)
 //   - App.tsx sessionReplaced handler (Option X)
-//   - Home guest banner (optional)
+//   - Home guest banner
+//   - Deep-link routing when a guest opens a tournament link:
+//     params.returnTo = 'TournamentJoin', params.returnParams = { code }
+//   - AuthGate redirects from gated routes
+//
+// APK: platform-agnostic. No web-only APIs used here.
 
 import React, { useState } from 'react';
 import {
@@ -26,7 +31,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { ChevronLeft, Mail, Lock } from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
@@ -38,7 +43,13 @@ import { showAlert } from '../utils/alert';
 
 export default function LoginScreen() {
   const navigation = useNavigation<any>();
-  const { bootstrapAuth, username, avatar } = useUserStore();
+  const route = useRoute<any>();
+  const { bootstrapAuth } = useUserStore();
+
+  // Chat 11 — return path.
+  // { returnTo: 'TournamentJoin', returnParams: { code: 'ABCDEF' } }
+  const returnTo: string | undefined = route.params?.returnTo;
+  const returnParams: any = route.params?.returnParams;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -81,14 +92,19 @@ export default function LoginScreen() {
     try {
       disconnectFromServer();
       await connectToServer(getAccessToken);
+
+      // Read the FRESH identity from the store — bootstrapAuth just
+      // updated it. The destructured values at render time are stale.
+      const fresh = useUserStore.getState();
+      const freshUsername = fresh.username || undefined;
+      const freshAvatar = fresh.avatar || undefined;
+
       const s = getSocket();
       if (s) {
-        // identify ensures the public.users row exists for this uid
-        // (it may already from migration or previous use).
         try {
           await identifyOnServer({
-            username: username || undefined,
-            avatar: avatar || undefined,
+            username: freshUsername,
+            avatar: freshAvatar,
           });
         } catch (e: any) {
           console.log('[LOGIN] identify after login failed:', e?.message);
@@ -99,9 +115,39 @@ export default function LoginScreen() {
     }
 
     setLoading(false);
+
+    // Navigation: prefer returnTo, fall back to Home.
+    if (returnTo) {
+      console.log('[LOGIN] success — returning to', returnTo, returnParams);
+      try {
+        // Replace Login with the destination so back doesn't land
+        // back here. The `as any` escape hatch matches App.tsx's
+        // pattern while RootStackParamList is still narrow.
+        (navigation.replace as any)(returnTo, returnParams || undefined);
+        return;
+      } catch (e: any) {
+        console.log('[LOGIN] returnTo navigation failed:', e?.message);
+      }
+    }
+
     showAlert('Welcome back', 'You are signed in.');
     navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   };
+
+  const goToSignup = () => {
+    // Carry the same return path so the sign-up flow can also route
+    // the new user back to wherever they were headed.
+    if (returnTo) {
+      (navigation.navigate as any)('SignupLink', {
+        returnTo,
+        returnParams,
+      });
+    } else {
+      navigation.navigate('SignupLink');
+    }
+  };
+
+  const showTournamentHint = returnTo === 'TournamentJoin';
 
   return (
     <ScreenContainer>
@@ -122,6 +168,14 @@ export default function LoginScreen() {
           <Text style={styles.subhead}>
             Sign in with the email you linked to your account.
           </Text>
+
+          {showTournamentHint ? (
+            <View style={styles.hintBox}>
+              <Text style={styles.hintText}>
+                🏆 Sign in to join the tournament.
+              </Text>
+            </View>
+          ) : null}
 
           <View style={styles.field}>
             <Mail size={18} color="#5a5a7a" style={styles.fieldIcon} />
@@ -183,7 +237,7 @@ export default function LoginScreen() {
 
           <TouchableOpacity
             style={styles.secondary}
-            onPress={() => navigation.navigate('SignupLink')}
+            onPress={goToSignup}
             disabled={loading}
           >
             <Text style={styles.secondaryText}>
@@ -226,8 +280,24 @@ const styles = StyleSheet.create({
   subhead: {
     fontSize: 14,
     color: '#5a5a7a',
-    marginBottom: 28,
+    marginBottom: 20,
     lineHeight: 20,
+  },
+
+  hintBox: {
+    backgroundColor: 'rgba(250, 204, 21, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(250, 204, 21, 0.28)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginBottom: 20,
+  },
+  hintText: {
+    color: '#facc15',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 
   field: {

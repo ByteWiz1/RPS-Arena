@@ -1,3 +1,18 @@
+// src/screens/ProfileScreen.tsx
+//
+// RPS Arena — profile (Stats / History / Avatars / Leaderboard / Awards).
+//
+// Chat 11 — guest placeholder:
+//   Persistent data (stats, history, leaderboard, avatars, achievements)
+//   requires a registered account. Guests see the tabs but the gated
+//   tabs render a "Sign in to save your progress" placeholder instead
+//   of empty data. No server fetches fire for guests.
+//
+//   The Avatars tab keeps its existing behavior for registered users.
+//   Guests see the empty state, and "Create Avatar" routes to Login.
+//
+// APK: platform-agnostic. No web-only APIs.
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
@@ -7,7 +22,6 @@ import {
   TextInput,
   Image,
   ActivityIndicator,
-  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -19,13 +33,10 @@ import {
   ChevronLeft,
   Plus,
   Trash2,
-  BarChart3,
-  History as HistoryIcon,
-  Bot,
-  Trophy,
   RefreshCw,
   Award,
   ChevronRight,
+  Lock,
 } from 'lucide-react-native';
 
 import { useAvatarStore } from '../store/avatarStore';
@@ -69,10 +80,8 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function ProfileScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
+  const { isAnonymous } = useUserStore();
 
-  // Feature A (Chat 8) — HomeStatsCard navigates here with
-  // { initialTab: 'stats' }. Default remains 'stats' so existing
-  // navigation (from anywhere else) is unchanged.
   const initialTab: TabKey =
     route?.params?.initialTab &&
     TABS.some((t) => t.key === route.params.initialTab)
@@ -81,9 +90,6 @@ export default function ProfileScreen() {
 
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab);
 
-  // If the screen is already mounted and something re-navigates with a new
-  // initialTab param, honor it. No-op when the param is absent (the common
-  // case for back-navigation).
   useEffect(() => {
     const p = route?.params?.initialTab;
     if (p && TABS.some((t) => t.key === p)) {
@@ -94,6 +100,13 @@ export default function ProfileScreen() {
   useEffect(() => {
     startMenuMusic();
   }, []);
+
+  const goToLogin = useCallback(() => {
+    (navigation.navigate as any)('Login', {
+      returnTo: 'Profile',
+      returnParams: { initialTab: activeTab },
+    });
+  }, [navigation, activeTab]);
 
   return (
     <ScreenContainer>
@@ -109,6 +122,24 @@ export default function ProfileScreen() {
           <Text style={styles.headerTitle}>Profile</Text>
           <View style={styles.headerPlaceholder} />
         </View>
+
+        {/* ─── GUEST BANNER ─── */}
+        {isAnonymous ? (
+          <TouchableOpacity
+            style={styles.guestBanner}
+            onPress={goToLogin}
+            activeOpacity={0.85}
+          >
+            <Lock size={16} color="#facc15" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.guestBannerTitle}>Save your progress</Text>
+              <Text style={styles.guestBannerSub}>
+                Sign in to keep stats, avatars, and history across devices
+              </Text>
+            </View>
+            <ChevronRight size={18} color="#facc15" />
+          </TouchableOpacity>
+        ) : null}
 
         {/* ─── TAB BAR ─── */}
         <View style={styles.tabBar}>
@@ -133,18 +164,97 @@ export default function ProfileScreen() {
         </View>
 
         {/* ─── TAB CONTENT ─── */}
-        {activeTab === 'stats' && <StatsTab />}
-        {activeTab === 'history' && <HistoryTab />}
-        {activeTab === 'avatars' && <AvatarsTab />}
-        {activeTab === 'leaderboard' && <LeaderboardTab />}
-        {activeTab === 'achievements' && <AchievementsTab />}
+        {activeTab === 'stats' && (
+          isAnonymous ? (
+            <GuestPlaceholder
+              emoji="📊"
+              title="Stats are for members"
+              body="Sign in to see your wins, losses, streaks, and per-mode breakdown."
+              onSignIn={goToLogin}
+            />
+          ) : (
+            <StatsTab />
+          )
+        )}
+        {activeTab === 'history' && (
+          isAnonymous ? (
+            <GuestPlaceholder
+              emoji="📜"
+              title="History is for members"
+              body="Sign in to keep a record of your recent matches across devices."
+              onSignIn={goToLogin}
+            />
+          ) : (
+            <HistoryTab />
+          )
+        )}
+        {activeTab === 'avatars' && (
+          <AvatarsTab onSignInRequired={goToLogin} />
+        )}
+        {activeTab === 'leaderboard' && (
+          isAnonymous ? (
+            <GuestPlaceholder
+              emoji="🏆"
+              title="Leaderboard is for members"
+              body="Sign in to compete and appear on the global leaderboard."
+              onSignIn={goToLogin}
+            />
+          ) : (
+            <LeaderboardTab />
+          )
+        )}
+        {activeTab === 'achievements' && (
+          isAnonymous ? (
+            <GuestPlaceholder
+              emoji="🎖️"
+              title="Awards are for members"
+              body="Sign in to unlock achievements and track your progress."
+              onSignIn={goToLogin}
+            />
+          ) : (
+            <AchievementsTab />
+          )
+        )}
       </SafeAreaView>
     </ScreenContainer>
   );
 }
 
 /* ============================================================
- * TAB 1 — STATS
+ * Guest placeholder
+ * ============================================================ */
+function GuestPlaceholder({
+  emoji,
+  title,
+  body,
+  onSignIn,
+}: {
+  emoji: string;
+  title: string;
+  body: string;
+  onSignIn: () => void;
+}) {
+  return (
+    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
+      <View style={styles.guestPlaceholder}>
+        <Text style={styles.guestPlaceholderEmoji}>{emoji}</Text>
+        <Text style={styles.guestPlaceholderTitle}>{title}</Text>
+        <Text style={styles.guestPlaceholderBody}>{body}</Text>
+        <TouchableOpacity
+          style={styles.guestPlaceholderButton}
+          onPress={onSignIn}
+          activeOpacity={0.85}
+        >
+          <Lock size={16} color="#ffffff" />
+          <Text style={styles.guestPlaceholderButtonText}>Sign in</Text>
+        </TouchableOpacity>
+      </View>
+    </ScreenScroll>
+  );
+}
+
+/* ============================================================
+ * TAB 1 — STATS  (registered users only)
  * ============================================================ */
 function StatsTab() {
   const { identity, loaded: userLoaded } = useUserStore();
@@ -167,8 +277,6 @@ function StatsTab() {
     }
   }, []);
 
-  // Initial fetch + focus refetch (covers reconnect cases where
-  // onPlayerStatsUpdate's socket was null at subscribe time).
   useEffect(() => {
     fetchStats();
   }, [fetchStats]);
@@ -179,7 +287,6 @@ function StatsTab() {
     }, [fetchStats])
   );
 
-  // Live push subscription.
   useEffect(() => {
     const unsub = onPlayerStatsUpdate((s) => {
       if (s) setStats(s);
@@ -196,8 +303,7 @@ function StatsTab() {
   const showHeader = userLoaded && avatarLoaded;
 
   return (
-    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
-      {/* Identity header */}
+    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
       {showHeader && (
         <View style={styles.identityRow}>
           <View style={styles.identityAvatarWrap}>
@@ -244,18 +350,9 @@ function StatsTab() {
         </View>
       ) : (
         <>
-          {/* Big tiles */}
           <View style={styles.statGrid}>
-            <StatCard
-              label="Wins"
-              value={stats.wins}
-              accent="#4ade80"
-            />
-            <StatCard
-              label="Losses"
-              value={stats.losses}
-              accent="#f87171"
-            />
+            <StatCard label="Wins" value={stats.wins} accent="#4ade80" />
+            <StatCard label="Losses" value={stats.losses} accent="#f87171" />
             <StatCard
               label="Win Rate"
               value={winRate === null ? '—' : `${winRate}%`}
@@ -268,7 +365,6 @@ function StatsTab() {
             />
           </View>
 
-          {/* Current streak */}
           <View style={styles.streakCard}>
             <Text style={styles.streakCardLabel}>Current Streak</Text>
             <Text style={styles.streakCardValue}>
@@ -284,7 +380,6 @@ function StatsTab() {
             </Text>
           </View>
 
-          {/* Per-mode breakdown */}
           <Text style={styles.sectionLabel}>By Mode</Text>
 
           <ModeBreakdownCard
@@ -309,7 +404,6 @@ function StatsTab() {
             ties={stats.dojoTies}
           />
 
-          {/* Totals footnote */}
           <Text style={styles.footnote}>
             {stats.total} total matches • {stats.ties} ties
           </Text>
@@ -355,16 +449,12 @@ function ModeBreakdownCard({
 }
 
 /* ============================================================
- * TAB 2 — HISTORY
- *
- * Feature B (Chat 8): each row is now wrapped in a TouchableOpacity
- * that opens MatchDetailModal with the tapped record.
+ * TAB 2 — HISTORY  (registered users only)
  * ============================================================ */
 function HistoryTab() {
   const [matches, setMatches] = useState<ServerMatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-
   const [selectedMatch, setSelectedMatch] = useState<ServerMatchRecord | null>(
     null
   );
@@ -395,7 +485,7 @@ function HistoryTab() {
 
   return (
     <>
-      <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
+      <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
         <View style={styles.tabSectionHeader}>
           <Text style={styles.tabSectionTitle}>Recent Matches</Text>
           <TouchableOpacity
@@ -448,10 +538,11 @@ function HistoryTab() {
 }
 
 /* ============================================================
- * TAB 3 — AVATARS  (preserved from previous ProfileScreen)
+ * TAB 3 — AVATARS
  * ============================================================ */
-function AvatarsTab() {
+function AvatarsTab({ onSignInRequired }: { onSignInRequired: () => void }) {
   const navigation = useNavigation<any>();
+  const { isAnonymous } = useUserStore();
   const {
     avatars,
     selectedAvatarId,
@@ -461,6 +552,14 @@ function AvatarsTab() {
   } = useAvatarStore();
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+
+  const handleOpenCreate = () => {
+    if (isAnonymous) {
+      onSignInRequired();
+      return;
+    }
+    setShowCreate(true);
+  };
 
   const handleCreateAvatar = () => {
     if (!newName.trim()) {
@@ -473,6 +572,10 @@ function AvatarsTab() {
   };
 
   const handleDeleteAvatar = (id: string) => {
+    if (isAnonymous) {
+      onSignInRequired();
+      return;
+    }
     showAlert('Delete Avatar', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -485,12 +588,12 @@ function AvatarsTab() {
 
   return (
     <>
-      <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
+      <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
         <View style={styles.tabSectionHeader}>
           <Text style={styles.tabSectionTitle}>My Avatars</Text>
           <TouchableOpacity
             style={styles.refreshButton}
-            onPress={() => setShowCreate(true)}
+            onPress={handleOpenCreate}
             activeOpacity={0.8}
           >
             <Plus size={14} color="#e94560" />
@@ -503,13 +606,21 @@ function AvatarsTab() {
         {avatars.length === 0 ? (
           <View style={styles.emptyBlock}>
             <Text style={styles.emptyEmoji}>🤖</Text>
-            <Text style={styles.emptyTitle}>No Avatars Yet</Text>
-            <Text style={styles.emptyText}>Create your first AI champion</Text>
+            <Text style={styles.emptyTitle}>
+              {isAnonymous ? 'Avatars are for members' : 'No Avatars Yet'}
+            </Text>
+            <Text style={styles.emptyText}>
+              {isAnonymous
+                ? 'Sign in to create and train AI champions'
+                : 'Create your first AI champion'}
+            </Text>
             <TouchableOpacity
               style={styles.createButton}
-              onPress={() => setShowCreate(true)}
+              onPress={handleOpenCreate}
             >
-              <Text style={styles.createButtonText}>Create Avatar</Text>
+              <Text style={styles.createButtonText}>
+                {isAnonymous ? 'Sign in' : 'Create Avatar'}
+              </Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -522,15 +633,25 @@ function AvatarsTab() {
                   styles.avatarCard,
                   selectedAvatarId === avatar.id && styles.avatarCardSelected,
                 ]}
-                onPress={() => selectAvatar(avatar.id)}
+                onPress={() => {
+                  if (isAnonymous) {
+                    onSignInRequired();
+                    return;
+                  }
+                  selectAvatar(avatar.id);
+                }}
               >
                 <View style={styles.avatarInfo}>
                   <TouchableOpacity
-                    onPress={() =>
+                    onPress={() => {
+                      if (isAnonymous) {
+                        onSignInRequired();
+                        return;
+                      }
                       navigation.navigate('AvatarImage', {
                         avatarId: avatar.id,
-                      })
-                    }
+                      });
+                    }}
                     style={styles.avatarImageWrap}
                   >
                     {avatar.image?.type === 'custom' ? (
@@ -616,7 +737,7 @@ function AvatarsTab() {
 }
 
 /* ============================================================
- * TAB 4 — LEADERBOARD
+ * TAB 4 — LEADERBOARD  (registered users only)
  * ============================================================ */
 function LeaderboardTab() {
   const { identity } = useUserStore();
@@ -663,8 +784,7 @@ function LeaderboardTab() {
   }, [board, subTab]);
 
   return (
-    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
-      {/* Sub-tabs */}
+    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
       <View style={styles.subTabBar}>
         {(
           [
@@ -696,7 +816,12 @@ function LeaderboardTab() {
 
       <View style={styles.tabSectionHeader}>
         <Text style={styles.tabSectionTitle}>
-          Top {subTab === 'wins' ? 'by Wins' : subTab === 'winRate' ? 'by Win Rate' : 'by Streak'}
+          Top{' '}
+          {subTab === 'wins'
+            ? 'by Wins'
+            : subTab === 'winRate'
+            ? 'by Win Rate'
+            : 'by Streak'}
         </Text>
         <TouchableOpacity
           style={styles.refreshButton}
@@ -743,12 +868,7 @@ function LeaderboardTab() {
 }
 
 /* ============================================================
- * TAB 5 — ACHIEVEMENTS
- *
- * Compact summary of progress toward the 25 achievements. The full
- * badge grid lives on AchievementsScreen (registered in AppNavigator);
- * this tab shows the count, a progress bar, the most recent unlocks,
- * and a "View All Achievements" button that navigates there.
+ * TAB 5 — ACHIEVEMENTS  (registered users only)
  * ============================================================ */
 function AchievementsTab() {
   const navigation = useNavigation<any>();
@@ -787,7 +907,6 @@ function AchievementsTab() {
     : Object.keys(unlockedIds).length;
   const progress = total > 0 ? unlockedCount / total : 0;
 
-  // Most recent unlocks, newest first.
   const recentUnlocks = useMemo(() => {
     if (!catalog.length) return [];
     return catalog
@@ -797,8 +916,7 @@ function AchievementsTab() {
   }, [catalog, unlockedIds]);
 
   return (
-    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={120}>
-      {/* Progress card */}
+    <ScreenScroll contentStyle={styles.scrollContent} headerHeight={140}>
       <View style={styles.achievementsCard}>
         <View style={styles.achievementsCardHeader}>
           <Award size={20} color="#e94560" />
@@ -840,7 +958,6 @@ function AchievementsTab() {
         </Text>
       </View>
 
-      {/* Recent unlocks */}
       {recentUnlocks.length > 0 && (
         <>
           <Text style={styles.sectionLabel}>Recent Unlocks</Text>
@@ -860,7 +977,6 @@ function AchievementsTab() {
         </>
       )}
 
-      {/* View all button */}
       <TouchableOpacity
         style={styles.viewAllButton}
         onPress={() => navigation.navigate('Achievements')}
@@ -879,7 +995,6 @@ function AchievementsTab() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1 },
 
-  // Header
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -893,7 +1008,67 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 17, fontWeight: '700', color: '#ffffff' },
   headerPlaceholder: { width: 38 },
 
-  // Tab bar
+  // Guest banner
+  guestBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginHorizontal: 12,
+    marginTop: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(250, 204, 21, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(250, 204, 21, 0.3)',
+  },
+  guestBannerTitle: {
+    color: '#facc15',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  guestBannerSub: {
+    color: '#8a8a9a',
+    fontSize: 11,
+    marginTop: 1,
+  },
+
+  // Guest placeholder
+  guestPlaceholder: {
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+  },
+  guestPlaceholderEmoji: { fontSize: 56, marginBottom: 12 },
+  guestPlaceholderTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#ffffff',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  guestPlaceholderBody: {
+    fontSize: 13,
+    color: '#8a8a9a',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  guestPlaceholderButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#e94560',
+    paddingHorizontal: 28,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  guestPlaceholderButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+
   tabBar: {
     flexDirection: 'row',
     paddingHorizontal: 12,
@@ -922,14 +1097,12 @@ const styles = StyleSheet.create({
   },
   tabPillTextActive: { color: '#e94560' },
 
-  // Scroll content
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 60,
   },
 
-  // Identity header (Stats tab)
   identityRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -961,7 +1134,6 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.06)',
   },
 
-  // Stat grid
   statGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -969,7 +1141,6 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
 
-  // Streak card
   streakCard: {
     padding: 16,
     borderRadius: 14,
@@ -997,7 +1168,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // Section label
   sectionLabel: {
     fontSize: 12,
     color: '#5a5a7a',
@@ -1008,7 +1178,6 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
 
-  // Mode breakdown
   modeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1025,7 +1194,6 @@ const styles = StyleSheet.create({
   modeLine: { fontSize: 12, color: '#8a8a9a', marginTop: 4 },
   modeWinRate: { fontSize: 15, fontWeight: '800' },
 
-  // Footnote
   footnote: {
     textAlign: 'center',
     fontSize: 11,
@@ -1033,7 +1201,6 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
 
-  // Tab section headers (used by History / Avatars / Leaderboard)
   tabSectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1062,7 +1229,6 @@ const styles = StyleSheet.create({
     color: '#8a8a9a',
   },
 
-  // Loading / empty
   loadingBlock: {
     alignItems: 'center',
     paddingVertical: 40,
@@ -1074,10 +1240,14 @@ const styles = StyleSheet.create({
     paddingVertical: 50,
   },
   emptyEmoji: { fontSize: 56, marginBottom: 12 },
-  emptyTitle: { fontSize: 17, fontWeight: '700', color: '#ffffff', marginBottom: 6 },
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#ffffff',
+    marginBottom: 6,
+  },
   emptyText: { fontSize: 13, color: '#5a5a7a', marginBottom: 18 },
 
-  // Avatars tab (preserved from old ProfileScreen)
   createButton: {
     backgroundColor: '#e94560',
     paddingHorizontal: 32,
@@ -1148,7 +1318,6 @@ const styles = StyleSheet.create({
   },
   deleteButton: { padding: 8 },
 
-  // Create-avatar modal (preserved)
   modalOverlay: {
     position: 'absolute',
     top: 0,
@@ -1189,7 +1358,6 @@ const styles = StyleSheet.create({
   cancelButtonText: { color: '#5a5a7a', fontSize: 16, fontWeight: '600' },
   confirmButtonText: { color: '#ffffff', fontSize: 16, fontWeight: '600' },
 
-  // Leaderboard sub-tabs
   subTabBar: {
     flexDirection: 'row',
     gap: 8,
@@ -1211,7 +1379,6 @@ const styles = StyleSheet.create({
   subTabText: { fontSize: 11, fontWeight: '700', color: '#8a8a9a' },
   subTabTextActive: { color: '#4facfe' },
 
-  // ─── Achievements tab (Chat 7) ───
   achievementsCard: {
     padding: 16,
     borderRadius: 14,

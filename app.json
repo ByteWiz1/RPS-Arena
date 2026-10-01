@@ -3,6 +3,7 @@
     "name": "RPS Arena",
     "slug": "rps-arena",
     "version": "1.0.0",
+    "scheme": "rpsarena",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -24,7 +25,23 @@
         "backgroundColor": "#ffffff",
         "backgroundImage": "./assets/adaptive-background.png",
         "monochromeImage": "./assets/adaptive-monochrome.png"
-      }
+      },
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": false,
+          "data": [
+            {
+              "scheme": "rpsarena",
+              "host": "join"
+            }
+          ],
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
+        }
+      ]
     },
     "ios": {
       "icon": {

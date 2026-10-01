@@ -28,6 +28,7 @@ import { useOnlineStore } from '../store/onlineStore';
 import { useBattleStore } from '../store/battleStore';
 import { useUserStore } from '../store/userStore';
 import { useAvatarStore } from '../store/avatarStore';
+import { getAccessToken } from '../services/supabase';
 
 type Mode = 'main' | 'host' | 'join';
 
@@ -145,7 +146,7 @@ export default function OnlineLobbyScreen() {
 
   const ensureConnected = async (): Promise<boolean> => {
     try {
-      const socket = await connectToServer(identity);
+      const socket = await connectToServer(getAccessToken);
       return !!socket;
     } catch {
       return false;
