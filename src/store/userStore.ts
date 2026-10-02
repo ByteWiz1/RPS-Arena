@@ -1,27 +1,41 @@
 // src/store/userStore.ts
 //
-// RPS Arena — user/identity store (Chat 9 rewrite).
+// RPS Arena — user/identity store.
 //
 // Chat 9 model:
 //   - Supabase Auth is the source of truth (session + profiles).
-//   - This store holds a resolved snapshot for the rest of the app:
-//     userId, email, isAnonymous, username, avatar, isPremium.
-//   - `identity` is a UserIdentity-shaped cache so existing consumers
-//     (screens that read identity.userId / identity.username) keep
-//     working without edits. Its `token` field is intentionally unset.
+//   - This store holds a resolved snapshot for the rest of the app.
+//   - `identity` is a UserIdentity-shaped cache for legacy consumers.
+//
+// Chat 12a:
+//   - New `hasSession: boolean` — true iff a Supabase session exists.
+//   - New `isGuest: boolean` — profiles.is_guest (server-authoritative).
+//   - bootstrapAuth no longer auto-guests. Uses getExistingSession()
+//     (read-only). If no session → hasSession: false.
+//   - New setFromIdentify(reg) — App.tsx calls this after
+//     identifyOnServer so the store reflects the server's view.
+//   - setFromSession sets hasSession: true.
+//   - resetUser / clearUser clear hasSession to false.
+//
+// Chat 12b:
+//   - NO BEHAVIORAL CHANGES. AppNavigator derives its dynamic
+//     initial route and remount key from `hasSession`. Bootstrap
+//     flips hasSession correctly (Chat 12a). Sign-in/up auto-nav
+//     to Home is handled entirely by that mechanism.
+//   - Comment added on `resetUser()` noting that the identity cache
+//     is now cleared by `signOutLocal()` in supabase.ts, so this
+//     store method does not need to clear it again.
 //
 // Lifecycle:
-//   - bootstrapAuth() is called once from App.tsx on mount.
-//     It resolves the Supabase session, loads the profiles row, and
-//     populates this store.
+//   - bootstrapAuth() is called from App.tsx on mount and after
+//     sign-in / link. It resolves the session (never creates one),
+//     loads the profiles row, and populates this store.
 //   - updateUser() writes to the @rps_identity cache but NOT to the
 //     server. Server-side username changes go through
-//     changeUsernameOnServer() first (see SettingsScreen).
-//   - resetUser() is called on sessionReplaced: clears local state
-//     without signing out the Supabase session (the caller does that
-//     via signOutLocal()).
-//   - clearUser() is called on deleteAccount: signs out Supabase and
-//     wipes local storage.
+//     changeUsernameOnServer() first.
+//   - resetUser() is called on sessionReplaced (caller already
+//     called signOutLocal() which cleared the identity cache).
+//   - clearUser() is called on deleteAccount.
 
 import { create } from 'zustand';
 import {
@@ -30,7 +44,7 @@ import {
   clearIdentity as clearStoredIdentity,
 } from '../services/identity';
 import {
-  ensureSession,
+  getExistingSession,
   fetchProfile,
   signOut as supabaseSignOut,
 } from '../services/supabase';
@@ -40,6 +54,7 @@ interface UserState {
   userId: string | null;
   email: string | null;
   isAnonymous: boolean;
+  isGuest: boolean;
 
   username: string | null;
   avatar: string | null;
@@ -47,12 +62,11 @@ interface UserState {
   premiumSince: string | null;
 
   // ── Lifecycle ──
-  authReady: boolean;      // session resolved + store populated
+  authReady: boolean;      // boot finished deciding
+  hasSession: boolean;     // a Supabase session currently exists
   loaded: boolean;         // kept for compat with old consumers
 
   // ── Cache mirrored for legacy consumers ──
-  // Shaped like the old UserIdentity so existing screens keep working.
-  // `token` is intentionally never set (Supabase owns auth now).
   identity: UserIdentity | null;
 
   // ── Actions ──
@@ -69,6 +83,18 @@ interface UserState {
     avatar?: string | null;
     isPremium?: boolean;
     premiumSince?: string | null;
+  }) => void;
+
+  // Server identify payload. Authoritative for isGuest / isPremium /
+  // email. Called after identifyOnServer().
+  setFromIdentify: (r: {
+    username?: string | null;
+    avatar?: string | null;
+    isPremium?: boolean;
+    premiumSince?: string | null;
+    email?: string | null;
+    isGuest?: boolean;
+    isAnonymous?: boolean;
   }) => void;
 
   updateUser: (
@@ -102,6 +128,7 @@ export const useUserStore = create<UserState>((set, get) => ({
   userId: null,
   email: null,
   isAnonymous: true,
+  isGuest: true,
 
   username: null,
   avatar: null,
@@ -109,69 +136,93 @@ export const useUserStore = create<UserState>((set, get) => ({
   premiumSince: null,
 
   authReady: false,
+  hasSession: false,
   loaded: false,
 
   identity: null,
 
   // ────────────────────────────────────────────────────────
   // bootstrapAuth — full boot from a cold start.
-  //   1. ensureSession() (anonymous if none)
-  //   2. fetchProfile()
-  //   3. populate all fields + identity cache + @rps_identity
+  //
+  // NO auto-guest. Reads the existing session. If none, sets
+  // hasSession: false and lets AppNavigator render Onboarding.
   // ────────────────────────────────────────────────────────
   bootstrapAuth: async () => {
-    const session = await ensureSession();
+    const session = await getExistingSession();
     if (!session) {
-      set({ authReady: true, loaded: true });
+      set({
+        userId: null,
+        email: null,
+        isAnonymous: true,
+        isGuest: true,
+        username: null,
+        avatar: null,
+        isPremium: false,
+        premiumSince: null,
+        identity: null,
+        hasSession: false,
+        authReady: true,
+        loaded: true,
+      });
       return;
     }
 
     const profile = await fetchProfile();
     const u = session.user;
     const meta: any = u.user_metadata || {};
-    const isAnonymous = !u.email || meta.is_anonymous === true;
+    const jwtSaysAnon = !u.email || meta.is_anonymous === true;
+
+    // isGuest: profiles.is_guest is authoritative when present.
+    const isGuest =
+      profile && typeof profile.is_guest === 'boolean'
+        ? profile.is_guest
+        : jwtSaysAnon;
 
     const username =
       profile?.username || meta.username || DEFAULT_USERNAME;
     const avatar = profile?.avatar || meta.avatar || DEFAULT_AVATAR;
+    const email = profile?.email || u.email || null;
 
     const identity = buildIdentityCache(u.id, username, avatar);
     if (identity) {
-      // Persist the cache so the app can render offline next launch.
       await saveIdentity(identity);
     }
 
     set({
       userId: u.id,
-      email: u.email || null,
-      isAnonymous,
+      email,
+      isAnonymous: jwtSaysAnon,
+      isGuest,
       username,
       avatar,
       isPremium: !!profile?.is_premium,
       premiumSince: profile?.premium_since || null,
       identity,
+      hasSession: true,
       authReady: true,
       loaded: true,
     });
   },
 
   // ────────────────────────────────────────────────────────
-  // Granular setters — used by App.tsx boot + re-identify.
+  // Granular setters
   // ────────────────────────────────────────────────────────
   setAuthReady: (v) => set({ authReady: v, loaded: true }),
 
   setFromSession: ({ userId, email, isAnonymous }) => {
-    const { username, avatar } = get();
+    const { username, avatar, isGuest } = get();
     const identity = buildIdentityCache(userId, username, avatar);
     if (identity) {
-      // Fire-and-forget — no need to await, cache is a convenience.
       saveIdentity(identity).catch(() => {});
     }
     set({
       userId,
       email,
       isAnonymous,
+      // Do not flip isGuest here — setFromIdentify is authoritative.
+      isGuest,
       identity,
+      hasSession: true,
     });
   },
 
@@ -197,9 +248,44 @@ export const useUserStore = create<UserState>((set, get) => ({
   },
 
   // ────────────────────────────────────────────────────────
+  // setFromIdentify — server identify payload.
+  //
+  // Authoritative for isGuest + isPremium + email. Every field is
+  // optional; undefined leaves the current value untouched.
+  // ────────────────────────────────────────────────────────
+  setFromIdentify: (r) => {
+    const {
+      userId,
+      username: curU,
+      avatar: curA,
+      isPremium: curP,
+      premiumSince: curPS,
+      email: curE,
+      isGuest: curG,
+    } = get();
+
+    const nextUsername = r.username !== undefined ? r.username : curU;
+    const nextAvatar = r.avatar !== undefined ? r.avatar : curA;
+
+    const identity = buildIdentityCache(userId, nextUsername, nextAvatar);
+    if (identity) {
+      saveIdentity(identity).catch(() => {});
+    }
+
+    set({
+      username: nextUsername,
+      avatar: nextAvatar,
+      isPremium: r.isPremium !== undefined ? !!r.isPremium : curP,
+      premiumSince:
+        r.premiumSince !== undefined ? r.premiumSince : curPS,
+      email: r.email !== undefined ? r.email : curE,
+      isGuest: r.isGuest !== undefined ? !!r.isGuest : curG,
+      identity,
+    });
+  },
+
+  // ────────────────────────────────────────────────────────
   // updateUser — local-only update of username/avatar.
-  // The server call (changeUsernameOnServer) is the caller's
-  // responsibility, as it was before Chat 9.
   // ────────────────────────────────────────────────────────
   updateUser: async (updates) => {
     const { userId, username, avatar } = get();
@@ -224,7 +310,6 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   // ────────────────────────────────────────────────────────
   // refreshPremium — re-read profiles.is_premium.
-  // Used by PremiumGate and post-purchase flows.
   // ────────────────────────────────────────────────────────
   refreshPremium: async () => {
     const profile = await fetchProfile();
@@ -237,19 +322,23 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   // ────────────────────────────────────────────────────────
   // resetUser — soft reset, no Supabase sign-out.
-  // Used by the sessionReplaced handler (Option X): the caller
-  // signs out locally, then calls resetUser().
+  //
+  // Caller is responsible for calling signOutLocal() first. That
+  // function clears the @rps_identity cache (Chat 12b fix). This
+  // method only clears the in-memory state.
   // ────────────────────────────────────────────────────────
   resetUser: () => {
     set({
       userId: null,
       email: null,
       isAnonymous: true,
+      isGuest: true,
       username: null,
       avatar: null,
       isPremium: false,
       premiumSince: null,
       identity: null,
+      hasSession: false,
       authReady: true,
       loaded: true,
     });
@@ -257,7 +346,6 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   // ────────────────────────────────────────────────────────
   // clearUser — full wipe. Signs out Supabase, clears cache.
-  // Used by deleteAccount (SettingsScreen).
   // ────────────────────────────────────────────────────────
   clearUser: async () => {
     try {
@@ -270,13 +358,16 @@ export const useUserStore = create<UserState>((set, get) => ({
       userId: null,
       email: null,
       isAnonymous: true,
+      isGuest: true,
       username: null,
       avatar: null,
       isPremium: false,
       premiumSince: null,
       identity: null,
+      hasSession: false,
       authReady: false,
       loaded: true,
     });
   },
 }));
+// src/store/userStore.ts

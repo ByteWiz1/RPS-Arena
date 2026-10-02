@@ -1,23 +1,42 @@
 // src/screens/LoginScreen.tsx
 //
-// RPS Arena — email + password login (Chat 9, new).
+// RPS Arena — email OR username login.
 //
-// Used to sign into an existing account from a new device.
-// On success:
-//   1. signInWithEmail() — establishes the Supabase session.
-//   2. userStore.bootstrapAuth() — reloads profile + store.
-//   3. Reconnect socket with the fresh JWT (disconnect + reconnect).
-//   4. Navigate to returnTo (if provided) or Home.
+// Chat 9: email + password login.
+// Chat 12a:
+//   - Single "Email or username" field. Contains '@' → email path.
+//     Otherwise resolve username → email via socket, then sign in.
+//   - Never leak "username not found" vs "wrong password": all
+//     failures render "Invalid credentials".
+// Chat 12b:
+//   - Bug B fix: Onboarding is a route now, so the back chevron works.
+//     Removed the `isReady()` guards — this screen always has a
+//     navigator because it's registered inside AppNavigator.
+//   - Bug E fix: no manual navigation after plain sign-in. The
+//     navigator's key is derived from `hasSession` in AppNavigator;
+//     when bootstrapAuth flips hasSession true, the navigator
+//     remounts on Home automatically.
+//   - returnTo path (deep link / AuthGate) uses `navigationRef` from
+//     './navigationRef' — a dependency-free module. The local
+//     `navigation` object is captured from the OLD navigator and is
+//     detached after the remount; using it here was a bug in the
+//     first draft. `navigationRef` is stable across remounts.
+//   - New CTA: "Don't have an account? Create Account" above the
+//     existing "Create or link an account instead" secondary button.
+//     Both navigate to SignupLink.
+//   - `identifyOnServer` response is now written into the store via
+//     `setFromIdentify`, so isGuest + email are authoritative.
 //
 // Reachable from:
+//   - OnboardingScreen "Sign In"
 //   - SettingsScreen "Sign in" (anonymous users)
 //   - App.tsx sessionReplaced handler (Option X)
 //   - Home guest banner
 //   - Deep-link routing when a guest opens a tournament link:
-//     params.returnTo = 'TournamentJoin', params.returnParams = { code }
+//     params.returnTo = 'TournamentJoin', returnParams = { code }
 //   - AuthGate redirects from gated routes
 //
-// APK: platform-agnostic. No web-only APIs used here.
+// APK: platform-agnostic. No web-only APIs used.
 
 import React, { useState } from 'react';
 import {
@@ -27,19 +46,28 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { ChevronLeft, Mail, Lock } from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
-import { signInWithEmail } from '../services/supabase';
+import {
+  signInWithEmail,
+  getAccessToken,
+} from '../services/supabase';
+import {
+  getSocket,
+  disconnectFromServer,
+  connectToServer,
+  identifyOnServer,
+  resolveEmailFromUsernameOnServer,
+} from '../services/multiplayer';
 import { useUserStore } from '../store/userStore';
-import { getSocket, disconnectFromServer, connectToServer, identifyOnServer } from '../services/multiplayer';
-import { getAccessToken } from '../services/supabase';
+import { navigationRef } from '../navigation/navigationRef';
 import { showAlert } from '../utils/alert';
+
+const INVALID_CREDENTIALS = 'Invalid credentials';
 
 export default function LoginScreen() {
   const navigation = useNavigation<any>();
@@ -48,19 +76,23 @@ export default function LoginScreen() {
 
   // Chat 11 — return path.
   // { returnTo: 'TournamentJoin', returnParams: { code: 'ABCDEF' } }
-  const returnTo: string | undefined = route.params?.returnTo;
-  const returnParams: any = route.params?.returnParams;
+  const returnTo: string | undefined = route?.params?.returnTo;
+  const returnParams: any = route?.params?.returnParams;
 
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   const validate = (): string | null => {
-    const trimmed = email.trim();
-    if (!trimmed) return 'Enter your email';
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return 'Enter a valid email';
+    const trimmed = identifier.trim();
+    if (!trimmed) return 'Enter your email or username';
     if (!password) return 'Enter your password';
+    if (trimmed.includes('@')) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+        return 'Enter a valid email';
+      }
+    }
     return null;
   };
 
@@ -74,27 +106,42 @@ export default function LoginScreen() {
     setLoading(true);
     setError(null);
 
-    const result = await signInWithEmail(email.trim(), password);
+    const trimmed = identifier.trim();
+    const isEmail = trimmed.includes('@');
+
+    // 1. Resolve email if the user typed a username.
+    let emailToUse = trimmed;
+    if (!isEmail) {
+      const resolved = await resolveEmailFromUsernameOnServer(trimmed);
+      if (!resolved.ok || !resolved.email) {
+        setLoading(false);
+        setError(INVALID_CREDENTIALS);
+        return;
+      }
+      emailToUse = resolved.email;
+    }
+
+    // 2. Sign in with Supabase using the resolved email.
+    const result = await signInWithEmail(emailToUse, password);
     if (!result.success) {
       setLoading(false);
-      setError(result.message || 'Login failed');
+      setError(INVALID_CREDENTIALS);
       return;
     }
 
-    // Reload userStore (profile, premium, identity cache).
+    // 3. Reload userStore. bootstrapAuth flips hasSession → true.
+    //    AppNavigator's key changes; the navigator remounts on Home.
     try {
       await bootstrapAuth();
     } catch (e: any) {
       console.log('[LOGIN] bootstrapAuth after login failed:', e?.message);
     }
 
-    // Reconnect socket so the new JWT is used.
+    // 4. Reconnect socket with the fresh JWT.
     try {
       disconnectFromServer();
       await connectToServer(getAccessToken);
 
-      // Read the FRESH identity from the store — bootstrapAuth just
-      // updated it. The destructured values at render time are stale.
       const fresh = useUserStore.getState();
       const freshUsername = fresh.username || undefined;
       const freshAvatar = fresh.avatar || undefined;
@@ -102,9 +149,17 @@ export default function LoginScreen() {
       const s = getSocket();
       if (s) {
         try {
-          await identifyOnServer({
+          const reg = await identifyOnServer({
             username: freshUsername,
             avatar: freshAvatar,
+          });
+          useUserStore.getState().setFromIdentify({
+            username: reg.username,
+            avatar: reg.avatar,
+            isPremium: reg.isPremium,
+            premiumSince: reg.premiumSince || null,
+            email: reg.email || null,
+            isGuest: reg.isGuest,
           });
         } catch (e: any) {
           console.log('[LOGIN] identify after login failed:', e?.message);
@@ -116,34 +171,57 @@ export default function LoginScreen() {
 
     setLoading(false);
 
-    // Navigation: prefer returnTo, fall back to Home.
+    // 5. returnTo navigation.
+    //
+    // If returnTo is unset, we do nothing. AppNavigator remounts on
+    // Home because hasSession flipped. Correct for the plain-login
+    // path.
+    //
+    // If returnTo IS set, we must navigate explicitly AFTER the
+    // navigator remounts. The remount is triggered by React
+    // re-rendering AppNavigator on the hasSession flip. We use the
+    // module-level `navigationRef` — NOT the local `navigation`
+    // object — because the local one belongs to the navigator that
+    // is about to be unmounted. After the remount, the local
+    // `navigation` handle is detached; calling it would be a no-op
+    // or throw.
+    //
+    // 100ms defer is long enough for React's render + commit cycle
+    // and short enough that the user never notices.
     if (returnTo) {
-      console.log('[LOGIN] success — returning to', returnTo, returnParams);
-      try {
-        // Replace Login with the destination so back doesn't land
-        // back here. The `as any` escape hatch matches App.tsx's
-        // pattern while RootStackParamList is still narrow.
-        (navigation.replace as any)(returnTo, returnParams || undefined);
-        return;
-      } catch (e: any) {
-        console.log('[LOGIN] returnTo navigation failed:', e?.message);
-      }
+      console.log('[LOGIN] success — will return to', returnTo, returnParams);
+      setTimeout(() => {
+        try {
+          if (navigationRef.isReady()) {
+            (navigationRef.navigate as any)(
+              returnTo,
+              returnParams || undefined
+            );
+            console.log('[LOGIN] returnTo navigation sent via navigationRef');
+          } else {
+            console.log('[LOGIN] returnTo deferred — navigationRef not ready');
+          }
+        } catch (e: any) {
+          console.log('[LOGIN] returnTo navigation failed:', e?.message);
+        }
+      }, 100);
+      return;
     }
 
     showAlert('Welcome back', 'You are signed in.');
-    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+    // No navigation — AppNavigator remounts on Home via the key.
   };
 
   const goToSignup = () => {
-    // Carry the same return path so the sign-up flow can also route
-    // the new user back to wherever they were headed.
-    if (returnTo) {
-      (navigation.navigate as any)('SignupLink', {
-        returnTo,
-        returnParams,
-      });
+    navigation.navigate('SignupLink');
+  };
+
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
     } else {
-      navigation.navigate('SignupLink');
+      // Fallback — shouldn't happen in normal flows.
+      navigation.navigate('Onboarding');
     }
   };
 
@@ -153,10 +231,7 @@ export default function LoginScreen() {
     <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-          >
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
             <ChevronLeft size={26} color="#e94560" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Sign In</Text>
@@ -166,7 +241,7 @@ export default function LoginScreen() {
         <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
           <Text style={styles.headline}>Welcome back</Text>
           <Text style={styles.subhead}>
-            Sign in with the email you linked to your account.
+            Sign in with your email or username.
           </Text>
 
           {showTournamentHint ? (
@@ -181,14 +256,14 @@ export default function LoginScreen() {
             <Mail size={18} color="#5a5a7a" style={styles.fieldIcon} />
             <TextInput
               style={styles.input}
-              placeholder="Email"
+              placeholder="Email or username"
               placeholderTextColor="#3a3a4a"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="email-address"
-              value={email}
+              value={identifier}
               onChangeText={(t) => {
-                setEmail(t);
+                setIdentifier(t);
                 if (error) setError(null);
               }}
               editable={!loading}
@@ -208,6 +283,7 @@ export default function LoginScreen() {
                 if (error) setError(null);
               }}
               editable={!loading}
+              onSubmitEditing={handleLogin}
             />
           </View>
 
@@ -234,6 +310,16 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <View style={styles.divider} />
+
+          <Text style={styles.noAccountText}>Don't have an account?</Text>
+
+          <TouchableOpacity
+            style={[styles.secondary, styles.createAccountButton]}
+            onPress={goToSignup}
+            disabled={loading}
+          >
+            <Text style={styles.createAccountText}>Create Account</Text>
+          </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.secondary}
@@ -345,6 +431,13 @@ const styles = StyleSheet.create({
     marginVertical: 28,
   },
 
+  noAccountText: {
+    color: '#8a8a9a',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+
   secondary: {
     paddingVertical: 14,
     borderRadius: 12,
@@ -353,4 +446,15 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.1)',
   },
   secondaryText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
+
+  createAccountButton: {
+    backgroundColor: 'rgba(79, 172, 254, 0.12)',
+    borderColor: 'rgba(79, 172, 254, 0.4)',
+    marginBottom: 10,
+  },
+  createAccountText: {
+    color: '#4facfe',
+    fontSize: 15,
+    fontWeight: '700',
+  },
 });

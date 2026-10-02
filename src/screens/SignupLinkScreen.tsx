@@ -7,8 +7,37 @@
 //   - Username is passed to supabase.auth.updateUser AND to
 //     profiles.username via linkEmailPassword.
 //   - After a successful link, the socket reconnects with a fresh
-//     JWT and re-identifies so the server sees the current auth
-//     state (belt-and-braces after Supabase rotates the session).
+//     JWT and re-identifies.
+//
+// Chat 12a:
+//   - After linkEmailPassword succeeds, writes profiles.email = the
+//     new email and profiles.is_guest = false directly via the
+//     Supabase client (RLS allows self-update of those fields).
+//   - Can be rendered two ways: inside AppNavigator (Settings or
+//     LoginScreen) or as a bare screen from Onboarding. Both call
+//     bootstrapAuth() after the link.
+//
+// Chat 12b:
+//   - Bug B fix: Onboarding is a route now, so back works. Removed
+//     the `isReady()` guards on navigation.
+//   - Bug C fix (part 1): username availability check is now
+//     race-guarded. Each keystroke increments a ref counter; a
+//     response is only applied if its request is still the latest.
+//     Without this, a slow response for keystroke N-2 can overwrite
+//     a fast response for keystroke N, showing the wrong status.
+//   - Bug C fix (part 2): debounce reduced from 400ms to 300ms.
+//   - Bug C fix (part 3): on timeout or transport failure, the
+//     client-side helper resolves with `{ available: false,
+//     uncertain: true, message: 'Couldn't check — try again' }`.
+//     The screen now renders that as a neutral/amber hint, NOT a red
+//     "taken" error, and does not block submit.
+//   - Bug C fix (part 4): on submit, if the check is uncertain or
+//     still in flight, we skip the client-side availability gate and
+//     let the server's `changeUsername` path re-validate. The server
+//     is authoritative.
+//   - Back button uses canGoBack()/goBack() with a fallback.
+//
+// APK: platform-agnostic. No web-only APIs used.
 
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -32,7 +61,11 @@ import {
 } from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
-import { linkEmailPassword, getAccessToken } from '../services/supabase';
+import {
+  linkEmailPassword,
+  getAccessToken,
+  supabase,
+} from '../services/supabase';
 import {
   checkUsernameAvailabilityOnServer,
   reconnectWithFreshJWT,
@@ -41,16 +74,18 @@ import {
 import { useUserStore } from '../store/userStore';
 import { showAlert } from '../utils/alert';
 
+// Username check states.
+type CheckState = 'idle' | 'checking' | 'available' | 'taken' | 'uncertain';
+
 export default function SignupLinkScreen() {
   const navigation = useNavigation<any>();
   const { username: currentUsername, avatar, bootstrapAuth } = useUserStore();
 
   const [username, setUsername] = useState(currentUsername || '');
   const [usernameError, setUsernameError] = useState<string | null>(null);
-  const [usernameChecking, setUsernameChecking] = useState(false);
-  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
-    null
-  );
+  const [usernameCheckState, setUsernameCheckState] =
+    useState<CheckState>('idle');
+  const [usernameHint, setUsernameHint] = useState<string | null>(null);
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -58,65 +93,106 @@ export default function SignupLinkScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Debounced availability check.
+  // Debounce timer for the availability check.
   const checkTimerRef = useRef<any>(null);
+  // Race guard. Incremented on each request. A response is only
+  // applied if its captured sequence equals the current value.
+  const checkSeqRef = useRef<number>(0);
+  // Last username we successfully checked (for cache skip).
   const lastCheckedRef = useRef<string>('');
 
   useEffect(() => {
     const trimmed = username.trim().toLowerCase();
     setUsernameError(null);
-    setUsernameAvailable(null);
+    setUsernameHint(null);
 
-    if (!trimmed) return;
+    if (!trimmed) {
+      setUsernameCheckState('idle');
+      return;
+    }
     if (trimmed.length < 3) {
       setUsernameError('Must be at least 3 characters');
+      setUsernameCheckState('idle');
       return;
     }
     if (trimmed.length > 15) {
       setUsernameError('Must be 15 characters or less');
+      setUsernameCheckState('idle');
       return;
     }
     if (!/^[a-z0-9_]+$/.test(trimmed)) {
       setUsernameError('Only letters, numbers, and underscores');
+      setUsernameCheckState('idle');
       return;
     }
 
-    // Skip the check if it's the same as what we already checked
-    // and it came back available.
-    if (trimmed === lastCheckedRef.current && usernameAvailable) return;
+    // Skip if we already know this exact name is available.
+    if (
+      trimmed === lastCheckedRef.current &&
+      usernameCheckState === 'available'
+    ) {
+      return;
+    }
 
+    // Debounce. Cancel any pending check.
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
 
     checkTimerRef.current = setTimeout(async () => {
-      setUsernameChecking(true);
+      // Bump sequence so any in-flight response is ignored.
+      const seq = ++checkSeqRef.current;
+      setUsernameCheckState('checking');
+      setUsernameHint(null);
+
+      let result: { available: boolean; message?: string; uncertain?: boolean };
       try {
-        const res = await checkUsernameAvailabilityOnServer(trimmed);
-        lastCheckedRef.current = trimmed;
-        setUsernameAvailable(res.available);
-        setUsernameChecking(false);
-        if (!res.available) {
-          setUsernameError(res.message || 'That username is already taken');
-        } else {
-          setUsernameError(null);
-        }
+        result = await checkUsernameAvailabilityOnServer(trimmed);
       } catch (e: any) {
-        setUsernameChecking(false);
-        setUsernameAvailable(null);
-        // Do not surface a hard error on transient check failure —
-        // the server re-validates on submit anyway.
+        // The helper should never throw, but be defensive.
+        result = { available: false, uncertain: true, message: 'Check failed' };
       }
-    }, 400);
+
+      // Only apply if we are still the latest request.
+      if (seq !== checkSeqRef.current) return;
+
+      if (result.uncertain) {
+        // Timeout or transport failure. Neutral state — do NOT block
+        // submit. The server re-validates on the actual link call.
+        lastCheckedRef.current = '';
+        setUsernameCheckState('uncertain');
+        setUsernameHint(result.message || "Couldn't check — try again");
+        setUsernameError(null);
+        return;
+      }
+
+      if (result.available) {
+        lastCheckedRef.current = trimmed;
+        setUsernameCheckState('available');
+        setUsernameHint(null);
+        setUsernameError(null);
+      } else {
+        lastCheckedRef.current = '';
+        setUsernameCheckState('taken');
+        setUsernameHint(null);
+        setUsernameError(result.message || 'That username is already taken');
+      }
+    }, 300);
 
     return () => {
       if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     };
-  }, [username, usernameAvailable]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [username]);
 
   const validate = (): string | null => {
     const trimmedEmail = email.trim();
     if (!username.trim()) return 'Pick a username';
     if (usernameError) return usernameError;
-    if (usernameChecking) return 'Checking username…';
+    // Block on 'checking' so we do not submit a name we have not
+    // verified. But allow 'uncertain' — server is authoritative.
+    if (usernameCheckState === 'checking') return 'Checking username…';
+    if (usernameCheckState === 'taken') {
+      return usernameError || 'That username is already taken';
+    }
     if (!trimmedEmail) return 'Enter your email';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail))
       return 'Enter a valid email';
@@ -136,9 +212,10 @@ export default function SignupLinkScreen() {
     setError(null);
 
     const trimmedUsername = username.trim().toLowerCase();
+    const trimmedEmail = email.trim();
 
     const result = await linkEmailPassword(
-      email.trim(),
+      trimmedEmail,
       password,
       trimmedUsername,
       avatar || undefined
@@ -148,6 +225,43 @@ export default function SignupLinkScreen() {
       setLoading(false);
       setError(result.message || 'Could not link account');
       return;
+    }
+
+    // Chat 12a — mark the profile as a member.
+    //
+    // linkEmailPassword calls auth.updateUser, which does NOT touch
+    // profiles.email or profiles.is_guest. We write those here.
+    //
+    // RLS: "profiles update own" allows self-update of email and
+    // is_guest (only is_premium and premium_since are pinned by
+    // WITH CHECK).
+    //
+    // Non-fatal on failure — but this is the primary path for
+    // setting email/is_guest, so we log clearly.
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const uid = sessionData?.session?.user?.id;
+      if (uid) {
+        const { error: profileErr } = await supabase
+          .from('profiles')
+          .update({
+            email: trimmedEmail,
+            is_guest: false,
+          })
+          .eq('id', uid);
+        if (profileErr) {
+          console.log(
+            '[SIGNUP] profiles.email/is_guest update failed:',
+            profileErr.message
+          );
+        }
+      } else {
+        console.log(
+          '[SIGNUP] no uid after linkEmailPassword — skipping profile mark'
+        );
+      }
+    } catch (e: any) {
+      console.log('[SIGNUP] profile mark exception:', e?.message || e);
     }
 
     // Reconnect the socket with the fresh (now-linked) JWT so the
@@ -160,10 +274,11 @@ export default function SignupLinkScreen() {
       });
     } catch (e: any) {
       console.log('[SIGNUP] reconnect/identify failed:', e?.message);
-      // Non-fatal. The next page load will pick up the new session.
     }
 
-    // Refresh the store so isAnonymous flips false and email is set.
+    // Refresh the store. bootstrapAuth reads the fresh session and
+    // flips hasSession → true. The navigator key changes; AppNavigator
+    // remounts on Home.
     try {
       await bootstrapAuth();
     } catch (e: any) {
@@ -175,25 +290,35 @@ export default function SignupLinkScreen() {
     if (result.needsConfirmation) {
       showAlert(
         'Confirm your email',
-        `We sent a confirmation link to ${email.trim()}. Click it to finish linking your account.`
+        `We sent a confirmation link to ${trimmedEmail}. Click it to finish linking your account.`
       );
     } else {
       showAlert('Account linked', 'Your progress is now saved to this email.');
     }
 
-    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+    // No manual navigation. AppNavigator remounts on Home via the key.
+    console.log('[SIGNUP] success — AppNavigator will remount on Home');
+  };
+
+  const handleBack = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Onboarding');
+    }
   };
 
   const usernameStatus = (() => {
-    if (usernameChecking) {
+    if (usernameCheckState === 'checking') {
       return <ActivityIndicator size="small" color="#5a5a7a" />;
     }
-    if (usernameAvailable === true && !usernameError) {
+    if (usernameCheckState === 'available') {
       return <CheckCircle size={18} color="#4ade80" />;
     }
-    if (usernameAvailable === false) {
+    if (usernameCheckState === 'taken') {
       return <XCircle size={18} color="#f87171" />;
     }
+    // idle and uncertain show no icon.
     return null;
   })();
 
@@ -201,10 +326,7 @@ export default function SignupLinkScreen() {
     <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
         <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-          >
+          <TouchableOpacity onPress={handleBack} style={styles.backButton}>
             <ChevronLeft size={26} color="#e94560" />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Save Progress</Text>
@@ -241,6 +363,10 @@ export default function SignupLinkScreen() {
 
           {usernameError && (
             <Text style={styles.error}>{usernameError}</Text>
+          )}
+
+          {!usernameError && usernameHint && (
+            <Text style={styles.hintText}>{usernameHint}</Text>
           )}
 
           <View style={styles.field}>
@@ -290,6 +416,7 @@ export default function SignupLinkScreen() {
                 if (error) setError(null);
               }}
               editable={!loading}
+              onSubmitEditing={handleLink}
             />
           </View>
 
@@ -387,6 +514,13 @@ const styles = StyleSheet.create({
   error: {
     color: '#f87171',
     fontSize: 13,
+    marginTop: 4,
+    marginBottom: 4,
+    marginLeft: 4,
+  },
+  hintText: {
+    color: '#facc15',
+    fontSize: 12,
     marginTop: 4,
     marginBottom: 4,
     marginLeft: 4,

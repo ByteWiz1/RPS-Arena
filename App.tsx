@@ -1,40 +1,44 @@
 // src/App.tsx
 //
-// RPS Arena — app root (Chat 9 rewrite).
+// RPS Arena — app root.
+//
+// Chat 9: bootstrap + socket + identity.
+// Chat 11: deep links (web + APK) for tournament codes.
+// Chat 12a: onboarding gate lived here as a render-swap.
+// Chat 12b:
+//   - The render-swap is GONE. Onboarding is now a registered route
+//     in AppNavigator. This file no longer owns `authBranch`.
+//   - Auto-login after email confirmation (Bug D): we subscribe to
+//     `onAuthStateChange` BEFORE reading the existing session, so a
+//     URL-fragment session that Supabase parses during mount is
+//     caught and bootstrapped.
+//   - Auto-navigate Home after sign-in/up (Bug E): the navigator's
+//     `key` is derived from hasSession in AppNavigator; this file
+//     just needs to make sure bootstrapAuth() flips hasSession.
+//     No screen calls navigation.reset() anymore.
 //
 // Boot sequence:
 //   1. Load local stores (settings, avatars, premium, notifications).
 //   2. Read @rps_identity cache.
-//      - If it has a legacy token → connect socket → migrateLegacyToken
+//      - If legacy token → connect socket → migrateLegacyToken
 //        → supabase.auth.setSession() → continue.
-//      - Else → supabase.auth.ensureSession() (anonymous if needed).
-//   3. Load profiles row for the current user (username/avatar/is_premium).
-//   4. Populate userStore.
-//   5. Connect socket with a fresh JWT (auth callback).
-//   6. identifyOnServer() to register presence.
-//   7. Render AppNavigator.
+//   3. Subscribe to onAuthStateChange (BEFORE reading session).
+//   4. Read the existing session via getExistingSession().
+//      - If none → authReady: true, hasSession: false.
+//        AppNavigator's initial route is Onboarding.
+//      - If present → load profiles, populate store, connect
+//        socket, identify.
+//   5. Auth-state listener handles SIGNED_IN (from email confirm or
+//      session refresh) by re-running bootstrapAuth().
 //
 // Session replacement (Option X):
-//   - Second device signs in → server sends sessionReplaced to old
-//     socket → old device signs out locally and navigates to LoginScreen.
+//   - Server sends sessionReplaced → we sign out locally + clear
+//     identity cache + resetUser. hasSession flips false. The
+//     navigator key changes; the navigator remounts on Onboarding.
 //
-// All pre-existing effects (roomReady navigation, notifications,
-// achievements, online users) are structurally unchanged.
-//
-// Chat 11 — deep link:
-//   - New effects read ?tournament=CODE on web and rpsarena://join/CODE
-//     on native, and route into TournamentJoin with the code pre-filled.
-//     Guests are routed through Login first, then returned to Join.
-//   - Navigation targets Login / TournamentJoin with `as never` casts
-//     because RootStackParamList still types them as `undefined` until
-//     AppNavigator.tsx gains the extended param shapes (later file in
-//     this same pass).
-//
-// APK: uses Linking.getInitialURL() and Linking.addEventListener('url')
-//   on native. Requires `scheme` + Android intent filter in app.json
-//   (handled in a later file). Web path is guarded by Platform.OS.
+// APK: Linking.getInitialURL() + Linking.addEventListener('url').
 
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   StatusBar,
   StyleSheet,
@@ -70,7 +74,7 @@ import {
 } from './src/services/identity';
 import {
   supabase,
-  ensureSession,
+  getExistingSession,
   getAccessToken,
   fetchProfile,
   signOutLocal,
@@ -84,6 +88,7 @@ export default function App() {
     setAuthReady,
     setFromSession,
     setFromProfile,
+    setFromIdentify,
     resetUser,
     clearUser,
   } = useUserStore();
@@ -95,7 +100,7 @@ export default function App() {
   const handledRoomRef = useRef<string | null>(null);
   const lastRouteRef = useRef<string | null>(null);
   const notifiedRoomsRef = useRef<Set<string>>(new Set());
-  const avatarUnsubRef = useRef<(() => void) | null>(null);   // ← ADD
+  const avatarUnsubRef = useRef<(() => void) | null>(null);
 
   // Prevents double-boot in React strict mode.
   const bootRef = useRef(false);
@@ -103,6 +108,12 @@ export default function App() {
   const identifiedRef = useRef(false);
   // Prevents the deep-link effect from firing more than once per launch.
   const deepLinkHandledRef = useRef(false);
+  // Chat 12b (Bug D) — dedupes the auth-state subscription so we do
+  // not double-bootstrap when SIGNED_IN fires in quick succession
+  // (Supabase can fire INITIAL_SESSION, SIGNED_IN, TOKEN_REFRESHED
+  // in one URL-fragment parse).
+  const lastHandledSessionRef = useRef<string | null>(null);
+
   // Ref to hold the current user's identity object for effect deps.
   const { identity, authReady } = useUserStore();
 
@@ -121,19 +132,140 @@ export default function App() {
   }, [loaded]);
 
   // ─── AUTH BOOT ───
-  // Runs once. Populates userStore, connects socket, identifies.
+  //
+  // Chat 12b (Bug D): the onAuthStateChange subscription is set up
+  // INSIDE this effect, BEFORE the getExistingSession() call. That
+  // ordering matters: when the user lands on the site from an email
+  // confirmation link, Supabase parses the URL fragment during
+  // module init and can fire SIGNED_IN before React mounts. If we
+  // subscribe after reading, we miss it.
+  //
+  // The listener:
+  //   - On SIGNED_IN with a session different from what we last
+  //     handled → call bootstrapAuth(). That repopulates the store
+  //     and flips hasSession → the navigator remounts on Home.
+  //   - On SIGNED_OUT → resetUser(). hasSession flips false →
+  //     navigator remounts on Onboarding.
+  //   - PASSWORD_RECOVERY is already handled by a separate effect
+  //     below; we ignore it here.
+  //
+  // Runs once.
   useEffect(() => {
     if (bootRef.current) return;
     bootRef.current = true;
 
+    let authSub: any = null;
+
+    // Subscribe FIRST — before any await — so we catch fragment
+    // sessions that Supabase resolves during mount.
+    try {
+      authSub = onAuthStateChange(async (event, session) => {
+        try {
+          if (event === 'SIGNED_IN' && session?.user) {
+            const uid = session.user.id;
+            // Dedupe: if we already bootstrapped this uid via the
+            // boot path or a previous SIGNED_IN, skip.
+            if (lastHandledSessionRef.current === uid) {
+              return;
+            }
+            // If the store already has this uid as an active
+            // session, skip. This handles the case where boot ran
+            // first and then Supabase re-fires SIGNED_IN on token
+            // refresh.
+            const currentUid = useUserStore.getState().userId;
+            if (currentUid === uid) {
+              lastHandledSessionRef.current = uid;
+              return;
+            }
+            console.log(
+              '[APP] onAuthStateChange SIGNED_IN — bootstrapping store | uid:', uid
+            );
+            lastHandledSessionRef.current = uid;
+
+            try {
+              await useUserStore.getState().bootstrapAuth();
+            } catch (e: any) {
+              console.log(
+                '[APP] bootstrapAuth from SIGNED_IN failed:',
+                e?.message || e
+              );
+              return;
+            }
+
+            // Connect socket + identify, same as the cold-boot path.
+            try {
+              await connectToServer(getAccessToken);
+            } catch (e: any) {
+              console.log(
+                '[APP] connectToServer from SIGNED_IN failed:',
+                e?.message || e
+              );
+            }
+
+            try {
+              const fresh = useUserStore.getState();
+              const reg = await identifyOnServer({
+                username: fresh.username || undefined,
+                avatar: fresh.avatar || undefined,
+              });
+              identifiedRef.current = true;
+              setFromIdentify({
+                username: reg.username,
+                avatar: reg.avatar,
+                isPremium: reg.isPremium,
+                premiumSince: reg.premiumSince || null,
+                email: reg.email || null,
+                isGuest: reg.isGuest,
+              });
+
+              // Avatars: attach listener + sync, same as boot.
+              try {
+                if (avatarUnsubRef.current) {
+                  try { avatarUnsubRef.current(); } catch {}
+                  avatarUnsubRef.current = null;
+                }
+                avatarUnsubRef.current =
+                  useAvatarStore.getState().attachServerListener();
+              } catch (e: any) {
+                console.log('[APP] avatar listener (auth) failed:', e?.message || e);
+              }
+              try {
+                await useAvatarStore.getState().syncFromServer();
+              } catch (e: any) {
+                console.log('[APP] avatar sync (auth) failed:', e?.message || e);
+              }
+            } catch (e: any) {
+              console.log(
+                '[APP] identify from SIGNED_IN failed:',
+                e?.message || e
+              );
+            }
+            return;
+          }
+
+          if (event === 'SIGNED_OUT') {
+            console.log('[APP] onAuthStateChange SIGNED_OUT — resetting store');
+            lastHandledSessionRef.current = null;
+            resetUser();
+            return;
+          }
+          // INITIAL_SESSION, TOKEN_REFRESHED, USER_UPDATED, and
+          // PASSWORD_RECOVERY: no action here.
+        } catch (e: any) {
+          console.log('[APP] onAuthStateChange handler error:', e?.message || e);
+        }
+      });
+    } catch (e: any) {
+      console.log('[APP] onAuthStateChange subscribe failed:', e?.message || e);
+    }
+
     (async () => {
       try {
-        // 1. Legacy migration path — old client with a custom token.
+        // 1. Legacy migration path.
         const cached = await loadIdentity();
         if (isLegacyIdentity(cached) && cached?.token) {
           console.log('[APP] Legacy identity detected — migrating');
 
-          // Connect with legacyToken only (no JWT yet).
           await new Promise<void>((resolve, reject) => {
             const s = require('socket.io-client').io(
               'https://rps-arena-server-2mxh.onrender.com',
@@ -172,16 +304,25 @@ export default function App() {
             );
           });
 
-          // Migration succeeded — rewrite the cache WITHOUT the token.
           await updateIdentity({ token: undefined });
           console.log('[APP] Legacy migration complete');
         }
 
-        // 2. Ensure a Supabase session (anonymous if none).
-        const session = await ensureSession();
+        // 2. Read the existing session.
+        //
+        // By this point Supabase has parsed any URL fragment (it
+        // does that on client init, before our code runs). If the
+        // fragment contained a valid session, getExistingSession()
+        // returns it, and the boot path populates the store. If
+        // Supabase parsed the fragment but our SIGNED_IN handler
+        // already fired and bootstrapped the store, getExistingSession
+        // returns the same session and the boot path here is a
+        // no-op-ish duplicate — bootstrapAuth is idempotent.
+        const session = await getExistingSession();
+
         if (!session) {
-          console.error('[APP] No Supabase session after ensureSession');
-          setAuthReady(false);
+          console.log('[APP] No session — Onboarding will render');
+          setAuthReady(true);
           return;
         }
 
@@ -191,15 +332,21 @@ export default function App() {
         // 4. Populate userStore.
         const u = session.user;
         const meta: any = u.user_metadata || {};
-        const isAnonymous = !u.email || meta.is_anonymous === true;
+        const jwtSaysAnon = !u.email || meta.is_anonymous === true;
+        const isGuest =
+          profile && typeof profile.is_guest === 'boolean'
+            ? profile.is_guest
+            : jwtSaysAnon;
+
         const username =
           profile?.username || meta.username || 'Player';
         const avatar = profile?.avatar || meta.avatar || '🤖';
+        const email = profile?.email || u.email || null;
 
         setFromSession({
           userId: u.id,
-          email: u.email || null,
-          isAnonymous,
+          email,
+          isAnonymous: jwtSaysAnon,
         });
         setFromProfile({
           username,
@@ -207,25 +354,34 @@ export default function App() {
           isPremium: !!profile?.is_premium,
           premiumSince: profile?.premium_since || null,
         });
+        setFromIdentify({
+          email,
+          isGuest,
+        });
+
+        // Mark this uid so the SIGNED_IN dedupe does not re-run
+        // the whole bootstrap for the same user.
+        lastHandledSessionRef.current = u.id;
 
         // 5. Connect socket with JWT callback.
         await connectToServer(getAccessToken);
 
-                // 6. Identify (ensures public.users row, registers presence).
+        // 6. Identify (ensures public.users row, registers presence).
         try {
           const reg = await identifyOnServer({ username, avatar });
           identifiedRef.current = true;
-          setFromProfile({
+          setFromIdentify({
             username: reg.username,
             avatar: reg.avatar,
             isPremium: reg.isPremium,
             premiumSince: reg.premiumSince || null,
+            email: reg.email || null,
+            isGuest: reg.isGuest,
           });
 
           // 6a. Subscribe to server-pushed avatar updates BEFORE
           // syncing, so any in-flight pushes don't get dropped.
           try {
-            // If a previous subscription exists (re-boot), tear it down.
             if (avatarUnsubRef.current) {
               try { avatarUnsubRef.current(); } catch {}
               avatarUnsubRef.current = null;
@@ -249,10 +405,17 @@ export default function App() {
         setAuthReady(true);
       } catch (e: any) {
         console.error('[APP] Boot failed:', e?.message || e);
-        setAuthReady(true); // render the app anyway; user can retry
+        setAuthReady(true);
       }
     })();
-  }, [setAuthReady, setFromSession, setFromProfile]);
+
+    return () => {
+      try {
+        authSub?.data?.subscription?.unsubscribe?.();
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ─── RE-IDENTIFY ON RECONNECT ───
   useEffect(() => {
@@ -269,9 +432,20 @@ export default function App() {
         identifyOnServer({
           username: identity.username || undefined,
           avatar: identity.avatar || undefined,
-        }).catch((e) => {
-          console.log('[APP] Re-identify failed:', e?.message || e);
-        });
+        })
+          .then((reg) => {
+            setFromIdentify({
+              username: reg.username,
+              avatar: reg.avatar,
+              isPremium: reg.isPremium,
+              premiumSince: reg.premiumSince || null,
+              email: reg.email || null,
+              isGuest: reg.isGuest,
+            });
+          })
+          .catch((e) => {
+            console.log('[APP] Re-identify failed:', e?.message || e);
+          });
       };
 
       socket.on('connect', onConnect);
@@ -291,7 +465,7 @@ export default function App() {
       clearInterval(interval);
       cleanup?.();
     };
-  }, [authReady, identity]);
+  }, [authReady, identity, setFromIdentify]);
 
   // ─── SESSION REPLACED (Option X) ───
   useEffect(() => {
@@ -312,13 +486,10 @@ export default function App() {
           await clearIdentity();
         } catch {}
         resetUser();
+        lastHandledSessionRef.current = null;
         showSessionReplacedAlert();
-        // Navigate to LoginScreen after a beat so the alert lands first.
-        setTimeout(() => {
-          if (navigationRef.isReady()) {
-            navigationRef.navigate('Login' as never);
-          }
-        }, 100);
+        // hasSession is now false. AppNavigator's key changes;
+        // navigator remounts on Onboarding.
       };
 
       socket.on('sessionReplaced', handleSessionReplaced);
@@ -684,16 +855,7 @@ export default function App() {
     identifiedRef.current = false;
   }, [identity?.userId]);
 
-  useEffect(() => {
-    handledRoomRef.current = null;
-    lastRouteRef.current = null;
-    identifiedRef.current = false;
-  }, [identity?.userId]);
-
   // ─── PASSWORD RECOVERY (web) ───
-  // User clicked the reset-email link. Supabase parses the URL
-  // fragment and fires PASSWORD_RECOVERY. Navigate to the reset
-  // screen so they can set a new password.
   useEffect(() => {
     const sub = onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') {
@@ -711,14 +873,6 @@ export default function App() {
   }, []);
 
   // ─── DEEP LINK (web + APK) ───
-  // Reads the incoming tournament link and routes the user into
-  // TournamentJoin with the code pre-filled. Guests are routed through
-  // Login first, then returned to Join after sign-in.
-  //
-  // Web:  <origin>/?tournament=CODE
-  // APK:  rpsarena://join/CODE (initial URL or tapped while running)
-  //
-  // Runs once per launch, after authReady + identity resolve.
   useEffect(() => {
     if (!authReady || !identity) return;
     if (deepLinkHandledRef.current) return;
@@ -748,9 +902,9 @@ export default function App() {
       if (isGuest) {
         console.log('[APP] Deep link — guest, routing via Login:', code);
         (navigationRef.navigate as any)(
-  'Login',
-  { returnTo: 'TournamentJoin', returnParams: { code } }
-);
+          'Login',
+          { returnTo: 'TournamentJoin', returnParams: { code } }
+        );
       } else {
         console.log('[APP] Deep link — registered, routing to Join:', code);
         (navigationRef.navigate as any)('TournamentJoin', { code });
@@ -761,10 +915,9 @@ export default function App() {
       const code = await readCode();
       if (!code) return;
 
-      // Wait for navigationRef to be ready (it mounts with the navigator).
       const tryNavigate = (attempt = 0) => {
         if (!navigationRef.isReady()) {
-          if (attempt > 20) return; // ~2s max
+          if (attempt > 20) return;
           setTimeout(() => tryNavigate(attempt + 1), 100);
           return;
         }
@@ -776,9 +929,6 @@ export default function App() {
   }, [authReady, identity]);
 
   // ─── DEEP LINK: runtime (APK) ───
-  // Listens for URLs tapped while the app is already open. Web is a
-  // no-op because the browser reloads the page for a new URL, which
-  // re-runs the initial-URL effect above.
   useEffect(() => {
     if (Platform.OS === 'web') return;
 
@@ -795,9 +945,9 @@ export default function App() {
         const isGuest = useUserStore.getState().isAnonymous;
         if (isGuest) {
           (navigationRef.navigate as any)(
-  'Login',
-  { returnTo: 'TournamentJoin', returnParams: { code } }
-);
+            'Login',
+            { returnTo: 'TournamentJoin', returnParams: { code } }
+          );
         } else {
           (navigationRef.navigate as any)('TournamentJoin', { code });
         }
@@ -816,6 +966,7 @@ export default function App() {
       }
     };
   }, []);
+
   // ─── WEB: full-height CSS injection ───
   useEffect(() => {
     if (Platform.OS === 'web') {

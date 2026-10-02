@@ -13,6 +13,26 @@
 //     allows updating your own row; premium fields are blocked).
 //   - generateDefaultUsername() helper for guest names.
 //
+// Chat 12a:
+//   - ensureSession() REMOVED. It was the auto-guest-on-boot path.
+//     Replaced by:
+//       getExistingSession()  — read-only, returns null if none.
+//       signInAnonymously()   — explicit opt-in, called only from
+//                               OnboardingScreen (Guest + Sign Up)
+//                               and never from App boot.
+//   - SupabaseProfile gains email + is_guest.
+//   - fetchProfile selects email + is_guest.
+//   - New markProfileAsMember(email) — updates profiles.email and
+//     flips is_guest to false. Kept here so SignupLinkScreen and any
+//     future email-change flow have one place to call. (SignupLink
+//     currently writes directly, but this helper is the canonical
+//     entry point going forward.)
+//   - New signInWithEmailOrUsername(identifier, password) — if
+//     identifier contains '@', signs in as email; else resolves the
+//     username via the socket helper (multiplayer.ts) and signs in
+//     with the resolved email. Normalizes all failures to
+//     "Invalid credentials".
+//
 // Env vars (client — add to .env at the project root):
 //   EXPO_PUBLIC_SUPABASE_URL
 //   EXPO_PUBLIC_SUPABASE_ANON_KEY
@@ -123,23 +143,31 @@ export interface SupabaseProfile {
   avatar: string | null;
   is_premium: boolean;
   premium_since: string | null;
+  email: string | null;
+  is_guest: boolean;
   created_at: string;
   updated_at: string;
 }
 
 // ──────────────────────────────────────────────────────────────
-// Default username generator
+// Default username / avatar generators
 // ──────────────────────────────────────────────────────────────
-// Produces something like 'player4729'. Length is 6 + 4 = 10 chars,
-// within the 3-15 server normalization window. Lowercase because the
-// server normalizes to lowercase anyway.
+// Used ONLY by signInAnonymously when the caller does not provide
+// explicit metadata. Produces something like 'guest4729'. Length
+// is 6 + 4 = 10 chars, within the 3-15 normalization window.
+// Lowercase because the server normalizes to lowercase anyway.
+//
+// NOTE: the handle_new_user trigger also produces a 'Guest_XXXX'
+// placeholder for anonymous inserts when metadata.username is null.
+// Whichever one lands first wins; the server's identify path
+// resolves collisions. This generator is kept so the metadata
+// payload is always non-empty and predictable.
 export function generateDefaultUsername(): string {
   const n = Math.floor(Math.random() * 9000) + 1000;
-  return `player${n}`;
+  return `guest${n}`;
 }
 
 export function generateDefaultAvatar(): string {
-  // Small set of starter emojis — stable, deterministic, no deps.
   const opts = ['🤖', '🐉', '🦊', '🐼', '🦉', '🐙', '🦁', '🐺'];
   return opts[Math.floor(Math.random() * opts.length)];
 }
@@ -149,22 +177,56 @@ export function generateDefaultAvatar(): string {
 // ──────────────────────────────────────────────────────────────
 
 /**
- * Return the current session, or create an anonymous one if none
- * exists. Passes a generated username + avatar in user_metadata so
- * the handle_new_user trigger seeds profiles with a real name
- * (Chat 9b — Bug 2 fix).
+ * Read-only. Returns the current Supabase session, or null if none.
+ *
+ * Chat 12a — this REPLACES ensureSession(). It never creates an
+ * anonymous session. App.tsx boot and userStore.bootstrapAuth use
+ * this; if it returns null, the app renders Onboarding.
  */
-export async function ensureSession(): Promise<Session | null> {
+export async function getExistingSession(): Promise<Session | null> {
   try {
-    const { data: existing, error: getErr } = await supabase.auth.getSession();
-    if (getErr) {
+    const { data, error } = await supabase.auth.getSession();
+    if (error) {
       // eslint-disable-next-line no-console
-      console.error('[SUPABASE] getSession error:', getErr.message);
+      console.error('[SUPABASE] getExistingSession error:', error.message);
+      return null;
     }
-    if (existing?.session) return existing.session;
+    return data?.session || null;
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.error('[SUPABASE] getExistingSession exception:', e?.message || e);
+    return null;
+  }
+}
 
-    const username = generateDefaultUsername();
-    const avatar = generateDefaultAvatar();
+/**
+ * Chat 12a — explicit anonymous sign-in.
+ *
+ * Called ONLY from OnboardingScreen:
+ *   - "Continue as Guest" button
+ *   - "Sign Up" button (creates a session first, then routes to
+ *     SignupLinkScreen, which needs an existing session to link)
+ *
+ * Never called from App boot. Never called by bootstrapAuth.
+ *
+ * Passes user_metadata { username, avatar } so the handle_new_user
+ * trigger seeds profiles with a real name.
+ */
+export async function signInAnonymously(opts?: {
+  username?: string;
+  avatar?: string;
+}): Promise<{ success: boolean; session: Session | null; message?: string }> {
+  try {
+    const existing = await getExistingSession();
+    if (existing) {
+      // Already have a session — return it, do not create a new one.
+      // This can happen if the user double-taps the Guest button or
+      // if a session was created by another tab.
+      return { success: true, session: existing };
+    }
+
+    const username = opts?.username || generateDefaultUsername();
+    const avatar = opts?.avatar || generateDefaultAvatar();
 
     const { data, error } = await supabase.auth.signInAnonymously({
       options: {
@@ -175,13 +237,18 @@ export async function ensureSession(): Promise<Session | null> {
     if (error) {
       // eslint-disable-next-line no-console
       console.error('[SUPABASE] signInAnonymously error:', error.message);
-      return null;
+      return { success: false, session: null, message: error.message };
     }
-    return data?.session || null;
+
+    return { success: true, session: data?.session || null };
   } catch (e: any) {
     // eslint-disable-next-line no-console
-    console.error('[SUPABASE] ensureSession error:', e?.message || e);
-    return null;
+    console.error('[SUPABASE] signInAnonymously exception:', e?.message || e);
+    return {
+      success: false,
+      session: null,
+      message: e?.message || 'Could not start a session',
+    };
   }
 }
 
@@ -222,6 +289,12 @@ export async function getCurrentUser(): Promise<User | null> {
  * After the update, if `username` was provided, sync profiles.username
  * directly (RLS allows updating your own row; premium fields are
  * blocked by the WITH CHECK policy).
+ *
+ * REQUIRES an existing session. Under Chat 12a's Option 1 flow,
+ * OnboardingScreen creates an anonymous session before routing the
+ * user here, so this precondition holds. The legacy guest-upgrade
+ * path from Settings also holds, because the guest already has a
+ * session.
  */
 export async function linkEmailPassword(
   email: string,
@@ -274,6 +347,52 @@ export async function linkEmailPassword(
 }
 
 /**
+ * Chat 12a — mark a profile as a member.
+ *
+ * Writes profiles.email and flips profiles.is_guest = false for the
+ * current user. Called after linkEmailPassword succeeds.
+ *
+ * RLS: "profiles update own" permits self-update of email/is_guest
+ * (only is_premium and premium_since are pinned by WITH CHECK).
+ *
+ * Non-fatal callers: SignupLinkScreen logs failures but does not
+ * block. Server-side identify will re-sync on next connect if the
+ * write is dropped — but only for username; email is not re-derived
+ * from the JWT on identify. So this write is the primary path and
+ * should be treated as required, not optional.
+ */
+export async function markProfileAsMember(
+  email: string
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const uid = sessionData?.session?.user?.id;
+    if (!uid) {
+      return { success: false, message: 'No active session' };
+    }
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({
+        email,
+        is_guest: false,
+      })
+      .eq('id', uid);
+
+    if (error) {
+      // eslint-disable-next-line no-console
+      console.error('[SUPABASE] markProfileAsMember error:', error.message);
+      return { success: false, message: error.message };
+    }
+    return { success: true };
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.error('[SUPABASE] markProfileAsMember exception:', e?.message || e);
+    return { success: false, message: e?.message || 'Profile update failed' };
+  }
+}
+
+/**
  * Login with email + password (new device).
  */
 export async function signInWithEmail(
@@ -290,6 +409,53 @@ export async function signInWithEmail(
   } catch (e: any) {
     return { success: false, message: e?.message || 'Login failed' };
   }
+}
+
+/**
+ * Chat 12a — sign in with either an email or a username.
+ *
+ * If `identifier` contains '@', it is treated as an email.
+ * Otherwise, it is treated as a username and resolved to an email
+ * via the socket helper `resolveEmailFromUsernameOnServer` (in
+ * multiplayer.ts — this file does not import from there to avoid a
+ * circular dependency; the caller passes the resolver in, OR uses
+ * LoginScreen's own two-step flow).
+ *
+ * NOTE: this helper is provided for callers that want a single
+ * entry point. LoginScreen currently does the two-step flow
+ * itself so it can render the "resolving" state without a
+ * helper bounce. Both paths produce the same result.
+ *
+ * All failures normalize to "Invalid credentials". Never leaks
+ * which half of the pair (identifier or password) was wrong.
+ */
+export async function signInWithEmailOrUsername(
+  identifier: string,
+  password: string,
+  resolveEmail: (username: string) => Promise<string | null>
+): Promise<{ success: boolean; message?: string }> {
+  const INVALID = 'Invalid credentials';
+
+  const trimmed = (identifier || '').trim();
+  if (!trimmed || !password) {
+    return { success: false, message: INVALID };
+  }
+
+  let emailToUse = trimmed;
+
+  if (!trimmed.includes('@')) {
+    const resolved = await resolveEmail(trimmed);
+    if (!resolved) {
+      return { success: false, message: INVALID };
+    }
+    emailToUse = resolved;
+  }
+
+  const result = await signInWithEmail(emailToUse, password);
+  if (!result.success) {
+    return { success: false, message: INVALID };
+  }
+  return { success: true };
 }
 
 /**
@@ -363,7 +529,9 @@ export async function fetchProfile(): Promise<SupabaseProfile | null> {
 
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, avatar, is_premium, premium_since, created_at, updated_at')
+      .select(
+        'id, username, avatar, is_premium, premium_since, email, is_guest, created_at, updated_at'
+      )
       .eq('id', uid)
       .maybeSingle();
 

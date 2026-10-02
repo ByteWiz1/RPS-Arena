@@ -4,47 +4,37 @@
 //
 // Chat 9  — register auth screens (Login, SignupLink, ForgotPassword,
 //           ResetPassword).
-// Chat 10 — register AI Training screens:
-//   TrainingMatch  — 5-round training session vs own avatar's AI
-//   TrainingResult — post-match personality shift + chart
-// Chat 11a — register Blitz Match:
-//   BlitzMatch — 10-variant Blitz training mode. Handles Sprint,
-//                Learn Under Pressure, Sudden Death, Streak Break,
-//                Duel, Sequence Recall, Countdown Mirror, Roulette,
-//                Betrayal, Two-Faced — all in one screen.
-// Chat 11 — register Tournament screens:
-//   TournamentEntry    — type selection (Human vs Human / Avatar vs Avatar)
-//   TournamentConfig   — host configuration form (STEP 4 options)
-//   TournamentLobby    — share code + joined list + Start button
-//   TournamentJoin     — join by code or share link
-//   TournamentBracket  — full bracket + Active system
-//   TournamentMatch    — a real match within a tournament
-//   TournamentChampion — champion reveal + rewards
-//
-// Chat 11 — Registration gate:
-//   Anything that writes to the server requires a registered account.
-//   Guests hitting a gated route are redirected to Login with a
-//   returnTo that carries them back after sign-in. Gated routes:
-//     OnlineMode, OnlineLobby, OnlineGame,
-//     TournamentEntry, TournamentConfig, TournamentLobby,
-//     TournamentJoin, TournamentBracket, TournamentMatch,
-//     TournamentChampion.
-//   Ungated (offline-safe): Home, Game, AIDojo, DojoMatch,
-//     Training, TrainingMatch, TrainingResult, BlitzMatch,
-//     Settings, AISettings, AvatarImage, Notifications, Premium,
-//     Profile, Leaderboard, Achievements, and all auth screens.
-//
-//   Login and SignupLink now accept optional returnTo / returnParams
-//   so a guest routed here from a deep link or a gated route lands
-//   back where they were headed. TournamentJoin accepts an optional
-//   code so a share link can pre-fill and auto-submit.
+// Chat 10 — register AI Training screens.
+// Chat 11a — register Blitz Match.
+// Chat 11 — register Tournament screens + AuthGate for gated routes.
+// Chat 12a — onboarding gate lived OUTSIDE the navigator via a
+//            render-swap in App.tsx.
+// Chat 12b — Onboarding is now a registered route.
+//   - Fixes "Sign In / Sign Up buttons do nothing on Onboarding"
+//     and "back button does nothing on Login/Signup". With Onboarding
+//     inside the stack, Login and Signup have a previous route to
+//     return to.
+//   - Initial route is dynamic:
+//       hasSession == false → 'Onboarding'
+//       hasSession == true  → 'Home'
+//     Implemented via a `key` on Stack.Navigator derived from
+//     hasSession. When the session flips, the navigator remounts
+//     with the new initial route. That gives us auto-navigate-to-
+//     Home after sign-in/sign-up (Bug E) for free, without any
+//     screen calling navigation.reset().
+//   - navigationRef moved to ./navigationRef.ts to break an import
+//     cycle (AppNavigator → LoginScreen → AppNavigator). The ref is
+//     re-exported here so existing importers of
+//     `{ navigationRef }` from this file keep working unchanged.
+//   - AuthGate is unchanged. It still redirects guests
+//     (isAnonymous) to Login with a returnTo. It's only ever
+//     evaluated once a session exists (guest or member).
 //
 // APK: platform-agnostic. No web-only APIs used.
 
 import React, { useEffect } from 'react';
 import {
   NavigationContainer,
-  createNavigationContainerRef,
   useNavigation,
   useRoute,
 } from '@react-navigation/native';
@@ -75,6 +65,9 @@ import SignupLinkScreen from '../screens/SignupLinkScreen';
 import ForgotPasswordScreen from '../screens/ForgotPasswordScreen';
 import ResetPasswordScreen from '../screens/ResetPasswordScreen';
 
+// Chat 12b — onboarding
+import OnboardingScreen from '../screens/OnboardingScreen';
+
 // Chat 10 — AI training screens
 import TrainingMatchScreen from '../screens/TrainingMatchScreen';
 import TrainingResultScreen from '../screens/TrainingResultScreen';
@@ -91,7 +84,16 @@ import TournamentBracketScreen from '../screens/TournamentBracketScreen';
 import TournamentMatchScreen from '../screens/TournamentMatchScreen';
 import TournamentChampionScreen from '../screens/TournamentChampionScreen';
 
+// Chat 12b — shared navigation ref (moved out of this file to break
+// an import cycle with LoginScreen).
+import { navigationRef } from './navigationRef';
+
 import { useUserStore } from '../store/userStore';
+
+// Re-export so existing importers of `{ navigationRef }` from this
+// module keep working. New code should import from './navigationRef'
+// directly.
+export { navigationRef };
 
 // Chat 11a — variant id type (mirrors BlitzRules.ts)
 type BlitzVariantId =
@@ -107,6 +109,11 @@ type BlitzVariantId =
   | 'two-faced';
 
 export type RootStackParamList = {
+  // Chat 12b — onboarding is now a route. Only reachable when
+  // hasSession is false; the navigator's dynamic initial route and
+  // key handle the swap.
+  Onboarding: undefined;
+
   Home: undefined;
   Game: { mode?: string; training?: boolean } | undefined;
   OnlineMode: undefined;
@@ -197,7 +204,6 @@ export type RootStackParamList = {
     code: string;
     isHost: boolean;
   };
-  // Chat 11 — accepts an optional code from a deep link or Login return.
   TournamentJoin: { code?: string } | undefined;
   TournamentBracket: {
     tournamentId: string;
@@ -217,9 +223,6 @@ export type RootStackParamList = {
 
 const Stack = createStackNavigator<RootStackParamList>();
 
-export const navigationRef =
-  createNavigationContainerRef<RootStackParamList>();
-
 // ────────────────────────────────────────────────────────────
 // AuthGate
 //
@@ -231,6 +234,11 @@ export const navigationRef =
 // rendered immediately, and if the user is a guest, a redirect is
 // queued via useEffect. This avoids a flash of the Login screen
 // during the auth bootstrap where isAnonymous might briefly be true.
+//
+// Chat 12b — unchanged. AuthGate is only ever evaluated once a
+// session exists (the onboarding gate sits above it via the
+// navigator's initial route). A guest with a session still gets
+// redirected to Login as before.
 // ────────────────────────────────────────────────────────────
 function AuthGate({ component: Component, ...rest }: any) {
   const navigation = useNavigation<any>();
@@ -238,8 +246,6 @@ function AuthGate({ component: Component, ...rest }: any) {
   const { isAnonymous, authReady } = useUserStore();
 
   useEffect(() => {
-    // Wait for auth to be ready before deciding. During boot,
-    // authReady is false and isAnonymous defaults to true.
     if (!authReady) return;
 
     if (isAnonymous) {
@@ -258,13 +264,10 @@ function AuthGate({ component: Component, ...rest }: any) {
   }, [authReady, isAnonymous, route.name]);
 
   if (!authReady) {
-    // Render nothing while auth boot is resolving.
     return null;
   }
 
   if (isAnonymous) {
-    // The redirect effect above will fire shortly. Render nothing to
-    // avoid flashing the wrapped screen.
     return null;
   }
 
@@ -272,15 +275,42 @@ function AuthGate({ component: Component, ...rest }: any) {
 }
 
 export default function AppNavigator() {
+  // Chat 12b — dynamic initial route.
+  //
+  // `hasSession` decides whether we start on Onboarding or Home.
+  // The `key` on Stack.Navigator is derived from hasSession so a
+  // flip remounts the whole navigator with the new initial route.
+  //
+  // This is the mechanism that auto-navigates to Home after a
+  // successful sign-in / sign-up (Bug E), and back to Onboarding
+  // after sessionReplaced or account deletion.
+  //
+  // We do NOT read authReady here — App.tsx only renders the
+  // navigator once authReady is true (it renders null before that).
+  const hasSession = useUserStore((s) => s.hasSession);
+
+  const initialRouteName = hasSession ? 'Home' : 'Onboarding';
+  const navigatorKey = hasSession ? 'app' : 'onboarding';
+
+  console.log(
+    '[NAV] rendering navigator | hasSession:', hasSession,
+    '| initialRoute:', initialRouteName,
+    '| key:', navigatorKey
+  );
+
   return (
     <NavigationContainer ref={navigationRef}>
       <Stack.Navigator
-        initialRouteName="Home"
+        key={navigatorKey}
+        initialRouteName={initialRouteName}
         screenOptions={{
           headerShown: false,
           cardStyle: { backgroundColor: '#0a0a0f' },
         }}
       >
+        {/* ─── Chat 12b — onboarding (only reached when no session) ─── */}
+        <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+
         {/* ─── Ungated — offline-safe ─── */}
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Game" component={GameScreen} />

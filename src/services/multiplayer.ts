@@ -6,29 +6,30 @@
 // Chat 9b: avatar event wrappers, onAvatarsUpdate, reconnectWithFreshJWT.
 // Chat 9c: nothing client-side.
 // Chat 9d:
-//   - createAvatarOnServer no longer sends an `id`. The server
-//     generates the UUID (fixes "invalid input syntax for type uuid").
+//   - createAvatarOnServer no longer sends an `id`.
 //   - New checkUsernameAvailabilityOnServer(username).
 // Chat 11: tournament socket helpers + types.
-// Chat 11: tournament socket helpers + types.
-// Chat 11b (debug pass):
-//   - onTournamentError: subscribe to server-side tournament errors.
-//   - onMatchCancelled: subscribe to match cancellation events.
-//   - [TOURNAMENT CLIENT] logs on every tournament emit and receive.
-//   - getTournamentFromServer logs the emit and result.
-// Chat 11e — Active window removed.
-//   - pressActiveOnServer: kept as a no-op. The server's pressActive
-//     handler is a no-op too. Safe if any stale client still emits it.
-//   - onActiveWindowUpdate / onPlayerActive / onPlayerInactive: kept
-//     for compatibility. The server no longer emits these, so the
-//     subscriptions never fire. Harmless.
-//   - No other changes.
+// Chat 11b (debug pass): onTournamentError, onMatchCancelled, logs.
+// Chat 11e — Active window removed. pressActive kept as a no-op.
+// Chat 12a:
+//   - New resolveEmailFromUsernameOnServer(username).
+//   - identifyOnServer return type gains `isGuest`.
+// Chat 12b:
+//   - Bug C fix (client side): checkUsernameAvailabilityOnServer now
+//     resolves `{ available: false, uncertain: true, message }` on
+//     timeout or transport failure, instead of `{ available: false,
+//     message: 'Check timed out' }`. The screen distinguishes
+//     "definitively taken" from "couldn't check" — the latter does
+//     not block submit and does not show a red error.
+//   - Timeout reduced from 5s to 4s (server also has a rate limit;
+//     the client should give up before the server does).
+//   - Logs added with [USERNAME CHECK] prefix.
 //
 // IMPORTANT: tournament screens must call getSocket() first and only
 // fall back to connectToServer if no socket is connected. Calling
 // connectToServer while a socket exists calls removeAllListeners()
 // and disconnects, which would kill listeners on other mounted
-// screens. See connectToServer below.
+// screens.
 
 import { io, Socket } from 'socket.io-client';
 import { UserIdentity } from './identity';
@@ -111,6 +112,7 @@ export function identifyOnServer(payload?: {
   premiumSince: string | null;
   email: string | null;
   isAnonymous: boolean;
+  isGuest: boolean;
 }> {
   return new Promise((resolve, reject) => {
     if (!socket?.connected) {
@@ -126,7 +128,13 @@ export function identifyOnServer(payload?: {
       clearTimeout(timeout);
       socket?.off('selfRegistered', onRegistered);
       socket?.off('identifyError', onError);
-      resolve(data);
+      // Normalize isGuest. Server always sends it now; older deploys
+      // may not. Fall back to isAnonymous.
+      const isGuest =
+        typeof data?.isGuest === 'boolean'
+          ? data.isGuest
+          : !!data?.isAnonymous;
+      resolve({ ...data, isGuest });
     };
 
     const onError = (err: { message?: string }) => {
@@ -149,6 +157,60 @@ export function identifyOnServer(payload?: {
     socket.on('selfRegistered', onRegistered);
     socket.on('identifyError', onError);
     socket.emit('identify', payload || {});
+  });
+}
+
+// ────────────────────────────────────────────────────────────
+// resolve email from username (login with username)
+// ────────────────────────────────────────────────────────────
+//
+// One-shot request/response. Mirrors checkUsernameAvailabilityOnServer.
+//
+// Server behavior:
+//   - Rate limited (see server.js).
+//   - Returns { email } on success.
+//   - Returns { error: 'not_found' | 'rate_limited' | 'server_error' }
+//     otherwise.
+//
+// This helper NEVER surfaces the difference between not_found and
+// rate_limited to the caller as a distinct code — callers should
+// treat both as "cannot resolve → show Invalid credentials". The
+// raw error is included for logging only.
+export function resolveEmailFromUsernameOnServer(
+  username: string
+): Promise<{ ok: boolean; email?: string; error?: string }> {
+  return new Promise((resolve) => {
+    if (!socket?.connected) {
+      console.log('[SOCKET] resolveEmailFromUsername — not connected');
+      resolve({ ok: false, error: 'not_connected' });
+      return;
+    }
+
+    let done = false;
+
+    const handler = (result: { email?: string; error?: string }) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timeout);
+      socket?.off('resolveEmailFromUsernameResult', handler);
+
+      if (result?.email) {
+        resolve({ ok: true, email: result.email });
+        return;
+      }
+      resolve({ ok: false, error: result?.error || 'unknown' });
+    };
+
+    const timeout = setTimeout(() => {
+      if (done) return;
+      done = true;
+      socket?.off('resolveEmailFromUsernameResult', handler);
+      console.log('[SOCKET] resolveEmailFromUsername timed out');
+      resolve({ ok: false, error: 'timeout' });
+    }, 6000);
+
+    socket.on('resolveEmailFromUsernameResult', handler);
+    socket.emit('resolveEmailFromUsername', { username });
   });
 }
 
@@ -251,14 +313,30 @@ export function changeUsernameOnServer(
 }
 
 // ============================================================
-// CHECK USERNAME AVAILABILITY (Chat 9d)
+// CHECK USERNAME AVAILABILITY
 // ============================================================
+//
+// Returns:
+//   { available: true }                        — check succeeded, name is free
+//   { available: false, message }              — check succeeded, name is taken
+//   { available: false, uncertain: true, ... } — could not check (timeout,
+//                                                transport error, not connected)
+//
+// The `uncertain` flag is what distinguishes "definitively taken"
+// from "we could not tell". Callers MUST treat `uncertain` as a
+// non-blocking state (the server re-validates on the actual
+// submission). See SignupLinkScreen.
 export function checkUsernameAvailabilityOnServer(
   username: string
-): Promise<{ available: boolean; message?: string }> {
+): Promise<{ available: boolean; message?: string; uncertain?: boolean }> {
   return new Promise((resolve) => {
     if (!socket?.connected) {
-      resolve({ available: false, message: 'Not connected to server' });
+      console.log('[USERNAME CHECK] not connected — returning uncertain');
+      resolve({
+        available: false,
+        uncertain: true,
+        message: 'Not connected — will check on submit',
+      });
       return;
     }
 
@@ -273,6 +351,10 @@ export function checkUsernameAvailabilityOnServer(
       done = true;
       clearTimeout(timeout);
       socket?.off('usernameAvailability', handler);
+      console.log(
+        '[USERNAME CHECK] response |',
+        JSON.stringify(result)
+      );
       resolve({
         available: !!result?.available,
         message: result?.message,
@@ -283,8 +365,13 @@ export function checkUsernameAvailabilityOnServer(
       if (done) return;
       done = true;
       socket?.off('usernameAvailability', handler);
-      resolve({ available: false, message: 'Check timed out' });
-    }, 5000);
+      console.log('[USERNAME CHECK] timeout — returning uncertain');
+      resolve({
+        available: false,
+        uncertain: true,
+        message: "Couldn't check — will try again on submit",
+      });
+    }, 4000);
 
     socket.on('usernameAvailability', handler);
     socket.emit('checkUsernameAvailability', { username });
@@ -1250,7 +1337,6 @@ export function onActiveWindowUpdate(
   if (!socket) return () => {};
   const handler = (data: { secondsLeft: number }) => {
     if (typeof data?.secondsLeft === 'number') {
-      // Log only every 10s to avoid drowning the console.
       if (data.secondsLeft % 10 === 0 || data.secondsLeft <= 5) {
         console.log(
           '[TOURNAMENT CLIENT] recv activeWindowUpdate | secondsLeft:',
@@ -1427,7 +1513,6 @@ export function onTournamentComplete(
   };
 }
 
-// NEW: server-side tournament errors.
 export function onTournamentError(
   callback: (err: TournamentErrorPayload) => void
 ): () => void {
@@ -1447,8 +1532,6 @@ export function onTournamentError(
   };
 }
 
-// NEW: match cancelled by the tournament engine (walkover, active
-// timeout). Emitted to the room by _cancelTournamentRoom.
 export function onMatchCancelled(
   callback: (data: {
     winnerId: string | null;
@@ -1464,7 +1547,7 @@ export function onMatchCancelled(
   }) => {
     if (data) {
       console.log(
-        '[TOURNAMENT CLIENT] recv matchCancelled | winner:', data.winnerId,
+        '[TOURNAMENT CLIENT] matchCancelled | winner:', data.winnerId,
         '| winnerSocket:', data.winnerSocketId,
         '| reason:', data.reason
       );

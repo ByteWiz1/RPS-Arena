@@ -20,7 +20,7 @@
   "include": [
     "**/*.ts",
     "**/*.tsx"
-  ],
+, "src/screens/UsernameScreen.tsx.bak"  ],
   "exclude": [
     "node_modules",
     "babel.config.js",
