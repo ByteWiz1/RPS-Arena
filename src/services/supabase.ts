@@ -3,35 +3,18 @@
 // RPS Arena — Supabase client + auth helpers.
 //
 // Chat 9:   initial.
-// Chat 9b:
-//   - emailRedirectTo: window.location.origin on updateUser({ email })
-//     and resetPasswordForEmail, so email links land on the deployed
-//     origin instead of localhost.
-//   - signInAnonymously now passes user_metadata { username, avatar }
-//     so the handle_new_user trigger seeds profiles with a real name.
-//   - linkEmailPassword syncs profiles.username after the link (RLS
-//     allows updating your own row; premium fields are blocked).
-//   - generateDefaultUsername() helper for guest names.
-//
-// Chat 12a:
-//   - ensureSession() REMOVED. It was the auto-guest-on-boot path.
-//     Replaced by:
-//       getExistingSession()  — read-only, returns null if none.
-//       signInAnonymously()   — explicit opt-in, called only from
-//                               OnboardingScreen (Guest + Sign Up)
-//                               and never from App boot.
-//   - SupabaseProfile gains email + is_guest.
-//   - fetchProfile selects email + is_guest.
-//   - New markProfileAsMember(email) — updates profiles.email and
-//     flips is_guest to false. Kept here so SignupLinkScreen and any
-//     future email-change flow have one place to call. (SignupLink
-//     currently writes directly, but this helper is the canonical
-//     entry point going forward.)
-//   - New signInWithEmailOrUsername(identifier, password) — if
-//     identifier contains '@', signs in as email; else resolves the
-//     username via the socket helper (multiplayer.ts) and signs in
-//     with the resolved email. Normalizes all failures to
-//     "Invalid credentials".
+// Chat 9b:  emailRedirectTo, anonymous metadata, linkEmailPassword.
+// Chat 12a: getExistingSession, signInAnonymously, SupabaseProfile
+//           gains email + is_guest, markProfileAsMember.
+// Chat 12b: signOutLocal / signOut clear the @rps_identity cache.
+// Chat 12b (fix):
+//   - Confirmed emailRedirectTo is set on both updateUser and
+//     resetPasswordForEmail (via getWebOrigin()).
+//   - Added a TODO comment on getWebOrigin explaining the native
+//     deep-link scheme change required for the APK build.
+//   - detectSessionInUrl on web is what makes the confirmation link
+//     work. Documented in the client config comment.
+//   - No new helpers. App.tsx calls onAuthStateChange directly.
 //
 // Env vars (client — add to .env at the project root):
 //   EXPO_PUBLIC_SUPABASE_URL
@@ -69,7 +52,17 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
 }
 
 // Web-only redirect target. On native this is undefined and
-// Supabase ignores the option (deep-link config is a later chat).
+// Supabase ignores the option — which means native email
+// confirmation does not work yet.
+//
+// TODO (native): when building the APK, switch this to the custom
+// scheme 'rpsarena://confirm' (registered in app.json) and add a
+// Linking handler in App.tsx to process the auth token returned in
+// the URL. Also change `detectSessionInUrl` to `false` on native so
+// Supabase does not attempt URL-fragment parsing there.
+//
+// Until then, native sign-up users must confirm their email on the
+// web (or the flow should be disabled on native — separate chat).
 function getWebOrigin(): string | undefined {
   if (Platform.OS !== 'web') return undefined;
   try {
@@ -120,6 +113,25 @@ const SupabaseStorageAdapter = {
 // ──────────────────────────────────────────────────────────────
 // Client
 // ──────────────────────────────────────────────────────────────
+//
+// detectSessionInUrl: true (web) is what makes email-confirmation
+// links work end-to-end:
+//
+//   1. User clicks the link in their email. The browser opens
+//      <origin>/#access_token=...&refresh_token=...&type=signup
+//      (or type=recovery for password reset).
+//   2. On module load, createClient parses the URL fragment,
+//      stores the session in localStorage, and queues a
+//      SIGNED_IN (or PASSWORD_RECOVERY) auth-state event.
+//   3. App.tsx subscribes to onAuthStateChange BEFORE reading the
+//      existing session, so the queued event fires into our
+//      handler. The handler bootstraps the store and flips
+//      isOnboarded true. The navigator remounts on Home.
+//
+// On native, detectSessionInUrl is false. The redirect target
+// (getWebOrigin) returns undefined, so Supabase falls back to its
+// own default. Native deep-link handling is deferred — see the
+// TODO on getWebOrigin above.
 export const supabase: SupabaseClient = createClient(
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
@@ -153,15 +165,7 @@ export interface SupabaseProfile {
 // Default username / avatar generators
 // ──────────────────────────────────────────────────────────────
 // Used ONLY by signInAnonymously when the caller does not provide
-// explicit metadata. Produces something like 'guest4729'. Length
-// is 6 + 4 = 10 chars, within the 3-15 normalization window.
-// Lowercase because the server normalizes to lowercase anyway.
-//
-// NOTE: the handle_new_user trigger also produces a 'Guest_XXXX'
-// placeholder for anonymous inserts when metadata.username is null.
-// Whichever one lands first wins; the server's identify path
-// resolves collisions. This generator is kept so the metadata
-// payload is always non-empty and predictable.
+// explicit metadata.
 export function generateDefaultUsername(): string {
   const n = Math.floor(Math.random() * 9000) + 1000;
   return `guest${n}`;
@@ -178,10 +182,7 @@ export function generateDefaultAvatar(): string {
 
 /**
  * Read-only. Returns the current Supabase session, or null if none.
- *
- * Chat 12a — this REPLACES ensureSession(). It never creates an
- * anonymous session. App.tsx boot and userStore.bootstrapAuth use
- * this; if it returns null, the app renders Onboarding.
+ * Never creates an anonymous session.
  */
 export async function getExistingSession(): Promise<Session | null> {
   try {
@@ -200,17 +201,10 @@ export async function getExistingSession(): Promise<Session | null> {
 }
 
 /**
- * Chat 12a — explicit anonymous sign-in.
+ * Explicit anonymous sign-in.
  *
- * Called ONLY from OnboardingScreen:
- *   - "Continue as Guest" button
- *   - "Sign Up" button (creates a session first, then routes to
- *     SignupLinkScreen, which needs an existing session to link)
- *
- * Never called from App boot. Never called by bootstrapAuth.
- *
- * Passes user_metadata { username, avatar } so the handle_new_user
- * trigger seeds profiles with a real name.
+ * Called ONLY from OnboardingScreen (Continue as Guest and Sign Up).
+ * Never from App boot. Never from bootstrapAuth.
  */
 export async function signInAnonymously(opts?: {
   username?: string;
@@ -219,9 +213,6 @@ export async function signInAnonymously(opts?: {
   try {
     const existing = await getExistingSession();
     if (existing) {
-      // Already have a session — return it, do not create a new one.
-      // This can happen if the user double-taps the Guest button or
-      // if a session was created by another tab.
       return { success: true, session: existing };
     }
 
@@ -283,18 +274,11 @@ export async function getCurrentUser(): Promise<User | null> {
  * Upgrade an anonymous user to an email/password account.
  * Same userId preserved — no data loss.
  *
- * `emailRedirectTo` is set to the current web origin so the
- * confirmation email returns to the deployed site, not localhost.
+ * REQUIRES an existing session (guest or member).
  *
- * After the update, if `username` was provided, sync profiles.username
- * directly (RLS allows updating your own row; premium fields are
- * blocked by the WITH CHECK policy).
- *
- * REQUIRES an existing session. Under Chat 12a's Option 1 flow,
- * OnboardingScreen creates an anonymous session before routing the
- * user here, so this precondition holds. The legacy guest-upgrade
- * path from Settings also holds, because the guest already has a
- * session.
+ * Passes emailRedirectTo on web so the confirmation email returns
+ * to the deployed origin. See getWebOrigin's TODO for the native
+ * story.
  */
 export async function linkEmailPassword(
   email: string,
@@ -318,8 +302,8 @@ export async function linkEmailPassword(
     );
     if (error) return { success: false, message: error.message };
 
-    // If the trigger had previously seeded profiles with a
-    // placeholder, refresh profiles now so username/avatar match.
+    // Refresh profiles.username/avatar in case the trigger had
+    // seeded a placeholder. RLS permits self-update of these.
     if (username) {
       try {
         const uid = data?.user?.id;
@@ -333,7 +317,6 @@ export async function linkEmailPassword(
             .eq('id', uid);
         }
       } catch (e: any) {
-        // Non-fatal — server will re-sync on next identify.
         // eslint-disable-next-line no-console
         console.error('[SUPABASE] profile sync after link failed:', e?.message);
       }
@@ -347,19 +330,14 @@ export async function linkEmailPassword(
 }
 
 /**
- * Chat 12a — mark a profile as a member.
+ * Mark a profile as a member.
  *
  * Writes profiles.email and flips profiles.is_guest = false for the
  * current user. Called after linkEmailPassword succeeds.
  *
- * RLS: "profiles update own" permits self-update of email/is_guest
- * (only is_premium and premium_since are pinned by WITH CHECK).
- *
- * Non-fatal callers: SignupLinkScreen logs failures but does not
- * block. Server-side identify will re-sync on next connect if the
- * write is dropped — but only for username; email is not re-derived
- * from the JWT on identify. So this write is the primary path and
- * should be treated as required, not optional.
+ * Note: SignupLinkScreen currently performs this write inline (it
+ * already has the session in scope). This helper is kept for any
+ * future caller that wants a one-shot function.
  */
 export async function markProfileAsMember(
   email: string
@@ -393,7 +371,12 @@ export async function markProfileAsMember(
 }
 
 /**
- * Login with email + password (new device).
+ * Login with email + password.
+ *
+ * On success, caller should inspect the session's
+ * user.email_confirmed_at to decide whether to route to Home or
+ * VerifyEmail. Supabase's signInWithPassword succeeds even for
+ * unconfirmed users when email confirmation is enabled.
  */
 export async function signInWithEmail(
   email: string,
@@ -412,22 +395,10 @@ export async function signInWithEmail(
 }
 
 /**
- * Chat 12a — sign in with either an email or a username.
+ * Sign in with email OR username.
  *
- * If `identifier` contains '@', it is treated as an email.
- * Otherwise, it is treated as a username and resolved to an email
- * via the socket helper `resolveEmailFromUsernameOnServer` (in
- * multiplayer.ts — this file does not import from there to avoid a
- * circular dependency; the caller passes the resolver in, OR uses
- * LoginScreen's own two-step flow).
- *
- * NOTE: this helper is provided for callers that want a single
- * entry point. LoginScreen currently does the two-step flow
- * itself so it can render the "resolving" state without a
- * helper bounce. Both paths produce the same result.
- *
- * All failures normalize to "Invalid credentials". Never leaks
- * which half of the pair (identifier or password) was wrong.
+ * Not used by LoginScreen (which does the two-step flow inline so
+ * it can show the "resolving" state). Kept for other callers.
  */
 export async function signInWithEmailOrUsername(
   identifier: string,
@@ -460,7 +431,6 @@ export async function signInWithEmailOrUsername(
 
 /**
  * Send a password reset email.
- * Redirects back to the deployed origin on web.
  */
 export async function sendPasswordReset(
   email: string
@@ -493,8 +463,32 @@ export async function completePasswordReset(
   }
 }
 
+// ──────────────────────────────────────────────────────────────
+// Identity cache clear
+// ──────────────────────────────────────────────────────────────
+//
+// The @rps_identity cache lives in AsyncStorage / localStorage and
+// is written by userStore (via identity.ts's saveIdentity). It
+// holds the last-known username/avatar so the app can render
+// something on first paint before Supabase resolves.
+//
+// On logout, that cache must be cleared. Otherwise the stale
+// username ("Joker") is visible on the next launch, before
+// Onboarding replaces it.
+async function clearIdentityCache(): Promise<void> {
+  try {
+    const identity = require('./identity');
+    if (identity && typeof identity.clearIdentity === 'function') {
+      await identity.clearIdentity();
+    }
+  } catch (e: any) {
+    // eslint-disable-next-line no-console
+    console.log('[SUPABASE] clearIdentityCache failed:', e?.message || e);
+  }
+}
+
 /**
- * Sign out ONLY this device.
+ * Sign out ONLY this device. Also clears the local identity cache.
  */
 export async function signOutLocal(): Promise<void> {
   try {
@@ -503,10 +497,11 @@ export async function signOutLocal(): Promise<void> {
     // eslint-disable-next-line no-console
     console.error('[SUPABASE] signOutLocal error:', e?.message || e);
   }
+  await clearIdentityCache();
 }
 
 /**
- * Full sign out (this device).
+ * Full sign out (this device). Also clears the local identity cache.
  */
 export async function signOut(): Promise<void> {
   try {
@@ -515,6 +510,7 @@ export async function signOut(): Promise<void> {
     // eslint-disable-next-line no-console
     console.error('[SUPABASE] signOut error:', e?.message || e);
   }
+  await clearIdentityCache();
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -565,3 +561,4 @@ export function onAuthStateChange(
     cb(event, session);
   });
 }
+// src/services/supabase.ts

@@ -3,37 +3,27 @@
 // RPS Arena — email OR username login.
 //
 // Chat 9: email + password login.
-// Chat 12a:
-//   - Single "Email or username" field. Contains '@' → email path.
-//     Otherwise resolve username → email via socket, then sign in.
-//   - Never leak "username not found" vs "wrong password": all
-//     failures render "Invalid credentials".
-// Chat 12b:
-//   - Bug B fix: Onboarding is a route now, so the back chevron works.
-//     Removed the `isReady()` guards — this screen always has a
-//     navigator because it's registered inside AppNavigator.
-//   - Bug E fix: no manual navigation after plain sign-in. The
-//     navigator's key is derived from `hasSession` in AppNavigator;
-//     when bootstrapAuth flips hasSession true, the navigator
-//     remounts on Home automatically.
-//   - returnTo path (deep link / AuthGate) uses `navigationRef` from
-//     './navigationRef' — a dependency-free module. The local
-//     `navigation` object is captured from the OLD navigator and is
-//     detached after the remount; using it here was a bug in the
-//     first draft. `navigationRef` is stable across remounts.
-//   - New CTA: "Don't have an account? Create Account" above the
-//     existing "Create or link an account instead" secondary button.
-//     Both navigate to SignupLink.
-//   - `identifyOnServer` response is now written into the store via
-//     `setFromIdentify`, so isGuest + email are authoritative.
+// Chat 12a: single "Email or username" field, resolve username → email.
+// Chat 12b: back works, no manual nav on plain login.
+// Chat 12b (fix):
+//   - On success, explicitly sets isOnboarded(true) so the navigator
+//     key flips regardless of any bootstrapAuth edge case.
+//   - After signInWithEmail, checks session.user.email_confirmed_at.
+//     If null (unconfirmed), routes to VerifyEmail by setting
+//     pendingConfirmation(email). Does NOT set isOnboarded.
+//   - Removed the duplicate "Create or link an account instead"
+//     button. Only one CTA remains: "Don't have an account?
+//     Create Account".
+//   - Return-to-deep-link path uses navigationRef after a 100ms
+//     delay so it lands on the fresh navigator stack.
+//   - Uses the top-level `supabase` export (no dynamic import).
 //
 // Reachable from:
 //   - OnboardingScreen "Sign In"
 //   - SettingsScreen "Sign in" (anonymous users)
 //   - App.tsx sessionReplaced handler (Option X)
 //   - Home guest banner
-//   - Deep-link routing when a guest opens a tournament link:
-//     params.returnTo = 'TournamentJoin', returnParams = { code }
+//   - Deep-link routing when a guest opens a tournament link.
 //   - AuthGate redirects from gated routes
 //
 // APK: platform-agnostic. No web-only APIs used.
@@ -55,6 +45,7 @@ import ScreenScroll from '../components/ScreenScroll';
 import {
   signInWithEmail,
   getAccessToken,
+  supabase,
 } from '../services/supabase';
 import {
   getSocket,
@@ -75,7 +66,6 @@ export default function LoginScreen() {
   const { bootstrapAuth } = useUserStore();
 
   // Chat 11 — return path.
-  // { returnTo: 'TournamentJoin', returnParams: { code: 'ABCDEF' } }
   const returnTo: string | undefined = route?.params?.returnTo;
   const returnParams: any = route?.params?.returnParams;
 
@@ -129,15 +119,58 @@ export default function LoginScreen() {
       return;
     }
 
-    // 3. Reload userStore. bootstrapAuth flips hasSession → true.
-    //    AppNavigator's key changes; the navigator remounts on Home.
+    // 3. Check whether the email is confirmed. Supabase's
+    //    signInWithPassword succeeds even for unconfirmed users when
+    //    email confirmation is enabled. We detect that and route to
+    //    VerifyEmail instead of Home.
+    let isConfirmed = true;
+    let confirmedEmail: string | null = null;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const u = sessionData?.session?.user;
+      confirmedEmail = u?.email || emailToUse;
+      isConfirmed = !!u?.email_confirmed_at;
+    } catch (e: any) {
+      console.log('[LOGIN] session inspect failed:', e?.message);
+    }
+
+    if (!isConfirmed) {
+      setLoading(false);
+      console.log(
+        '[LOGIN] signed in but email unconfirmed — routing to VerifyEmail'
+      );
+      try {
+        // Populate the store from the session so VerifyEmailScreen
+        // can read a real username/email.
+        await bootstrapAuth();
+      } catch (e: any) {
+        console.log(
+          '[LOGIN] bootstrapAuth (unconfirmed) failed:',
+          e?.message
+        );
+      }
+      // Override whatever bootstrapAuth computed for isOnboarded,
+      // and set the pending-confirmation state. The navigator key
+      // flips to 'verify'; AppNavigator remounts on VerifyEmail.
+      useUserStore.getState().setOnboarded(false);
+      useUserStore.getState().setPendingConfirmation(confirmedEmail);
+      return;
+    }
+
+    // 4. Confirmed. Reload userStore. bootstrapAuth flips hasSession
+    //    and (for a confirmed session) isOnboarded. The navigator
+    //    key changes and AppNavigator remounts on Home.
     try {
       await bootstrapAuth();
     } catch (e: any) {
       console.log('[LOGIN] bootstrapAuth after login failed:', e?.message);
     }
 
-    // 4. Reconnect socket with the fresh JWT.
+    // Explicit flip — belt-and-braces.
+    useUserStore.getState().setOnboarded(true);
+    useUserStore.getState().setPendingConfirmation(null);
+
+    // 5. Reconnect socket with the fresh JWT.
     try {
       disconnectFromServer();
       await connectToServer(getAccessToken);
@@ -171,23 +204,13 @@ export default function LoginScreen() {
 
     setLoading(false);
 
-    // 5. returnTo navigation.
+    // 6. returnTo navigation.
     //
-    // If returnTo is unset, we do nothing. AppNavigator remounts on
-    // Home because hasSession flipped. Correct for the plain-login
-    // path.
+    // For a plain login (no returnTo), the navigator remount on
+    // isOnboarded=true lands on Home. Show a welcome alert.
     //
-    // If returnTo IS set, we must navigate explicitly AFTER the
-    // navigator remounts. The remount is triggered by React
-    // re-rendering AppNavigator on the hasSession flip. We use the
-    // module-level `navigationRef` — NOT the local `navigation`
-    // object — because the local one belongs to the navigator that
-    // is about to be unmounted. After the remount, the local
-    // `navigation` handle is detached; calling it would be a no-op
-    // or throw.
-    //
-    // 100ms defer is long enough for React's render + commit cycle
-    // and short enough that the user never notices.
+    // For a returnTo (deep link / AuthGate), navigate explicitly
+    // via navigationRef, which survives the navigator remount.
     if (returnTo) {
       console.log('[LOGIN] success — will return to', returnTo, returnParams);
       setTimeout(() => {
@@ -220,7 +243,6 @@ export default function LoginScreen() {
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
-      // Fallback — shouldn't happen in normal flows.
       navigation.navigate('Onboarding');
     }
   };
@@ -319,16 +341,6 @@ export default function LoginScreen() {
             disabled={loading}
           >
             <Text style={styles.createAccountText}>Create Account</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.secondary}
-            onPress={goToSignup}
-            disabled={loading}
-          >
-            <Text style={styles.secondaryText}>
-              Create or link an account instead
-            </Text>
           </TouchableOpacity>
         </ScreenScroll>
       </SafeAreaView>
@@ -445,12 +457,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.1)',
   },
-  secondaryText: { color: '#ffffff', fontSize: 14, fontWeight: '600' },
 
   createAccountButton: {
     backgroundColor: 'rgba(79, 172, 254, 0.12)',
     borderColor: 'rgba(79, 172, 254, 0.4)',
-    marginBottom: 10,
   },
   createAccountText: {
     color: '#4facfe',
@@ -458,3 +468,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+// src/screens/LoginScreen.tsx

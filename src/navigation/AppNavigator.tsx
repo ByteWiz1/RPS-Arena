@@ -2,33 +2,35 @@
 //
 // RPS Arena — navigation.
 //
-// Chat 9  — register auth screens (Login, SignupLink, ForgotPassword,
-//           ResetPassword).
-// Chat 10 — register AI Training screens.
+// Chat 9   — register auth screens (Login, SignupLink, ForgotPassword,
+//            ResetPassword).
+// Chat 10  — register AI Training screens.
 // Chat 11a — register Blitz Match.
-// Chat 11 — register Tournament screens + AuthGate for gated routes.
-// Chat 12a — onboarding gate lived OUTSIDE the navigator via a
-//            render-swap in App.tsx.
-// Chat 12b — Onboarding is now a registered route.
-//   - Fixes "Sign In / Sign Up buttons do nothing on Onboarding"
-//     and "back button does nothing on Login/Signup". With Onboarding
-//     inside the stack, Login and Signup have a previous route to
-//     return to.
-//   - Initial route is dynamic:
-//       hasSession == false → 'Onboarding'
-//       hasSession == true  → 'Home'
-//     Implemented via a `key` on Stack.Navigator derived from
-//     hasSession. When the session flips, the navigator remounts
-//     with the new initial route. That gives us auto-navigate-to-
-//     Home after sign-in/sign-up (Bug E) for free, without any
-//     screen calling navigation.reset().
-//   - navigationRef moved to ./navigationRef.ts to break an import
-//     cycle (AppNavigator → LoginScreen → AppNavigator). The ref is
-//     re-exported here so existing importers of
-//     `{ navigationRef }` from this file keep working unchanged.
-//   - AuthGate is unchanged. It still redirects guests
-//     (isAnonymous) to Login with a returnTo. It's only ever
-//     evaluated once a session exists (guest or member).
+// Chat 11  — register Tournament screens + AuthGate for gated routes.
+// Chat 12a — onboarding lived outside the navigator (render-swap).
+// Chat 12b — onboarding became a route, but the navigator key was
+//            derived from `hasSession` — which flips as soon as a
+//            silent anon session is created during Sign Up / Guest.
+//            That broke the flow: the navigator remounted mid-onboarding.
+// Chat 12b (fix):
+//   - The navigator key and initial route are now derived from
+//     `isOnboarded` (and `pendingConfirmation`), NOT `hasSession`.
+//
+//     Key logic (see below):
+//       isOnboarded === false, pendingConfirmation === false
+//         → key 'onboarding', initialRoute 'Onboarding'
+//       isOnboarded === false, pendingConfirmation === true
+//         → key 'verify',     initialRoute 'VerifyEmail'
+//       isOnboarded === true
+//         → key 'app',        initialRoute 'Home'
+//
+//   - Register VerifyEmail (Chat 12b new screen).
+//   - Register Onboarding as before, but it's now the initial route
+//     only when not onboarded and not pending confirmation.
+//   - navigationRef is imported from ./navigationRef (already done in
+//     Chat 12b; no cycle).
+//   - AuthGate is unchanged. It still redirects guests to Login for
+//     gated routes. It's only ever evaluated for users with a session.
 //
 // APK: platform-agnostic. No web-only APIs used.
 
@@ -65,8 +67,9 @@ import SignupLinkScreen from '../screens/SignupLinkScreen';
 import ForgotPasswordScreen from '../screens/ForgotPasswordScreen';
 import ResetPasswordScreen from '../screens/ResetPasswordScreen';
 
-// Chat 12b — onboarding
+// Chat 12b — onboarding + email verification
 import OnboardingScreen from '../screens/OnboardingScreen';
+import VerifyEmailScreen from '../screens/VerifyEmailScreen';
 
 // Chat 10 — AI training screens
 import TrainingMatchScreen from '../screens/TrainingMatchScreen';
@@ -84,15 +87,14 @@ import TournamentBracketScreen from '../screens/TournamentBracketScreen';
 import TournamentMatchScreen from '../screens/TournamentMatchScreen';
 import TournamentChampionScreen from '../screens/TournamentChampionScreen';
 
-// Chat 12b — shared navigation ref (moved out of this file to break
-// an import cycle with LoginScreen).
+// Shared navigation ref (moved out of this file to break an import
+// cycle with LoginScreen).
 import { navigationRef } from './navigationRef';
 
 import { useUserStore } from '../store/userStore';
 
 // Re-export so existing importers of `{ navigationRef }` from this
-// module keep working. New code should import from './navigationRef'
-// directly.
+// module keep working.
 export { navigationRef };
 
 // Chat 11a — variant id type (mirrors BlitzRules.ts)
@@ -109,10 +111,8 @@ type BlitzVariantId =
   | 'two-faced';
 
 export type RootStackParamList = {
-  // Chat 12b — onboarding is now a route. Only reachable when
-  // hasSession is false; the navigator's dynamic initial route and
-  // key handle the swap.
   Onboarding: undefined;
+  VerifyEmail: undefined;
 
   Home: undefined;
   Game: { mode?: string; training?: boolean } | undefined;
@@ -142,7 +142,6 @@ export type RootStackParamList = {
   Notifications: undefined;
   Achievements: undefined;
 
-  // Chat 9 + Chat 11 — auth screens with optional return path
   Login:
     | {
         returnTo?: keyof RootStackParamList;
@@ -158,10 +157,9 @@ export type RootStackParamList = {
   ForgotPassword: undefined;
   ResetPassword: undefined;
 
-  // Chat 10 — AI training
   TrainingMatch: {
     avatarId: string;
-    target?: number; // Endurance mode when target > 3
+    target?: number;
   };
   TrainingResult: {
     avatarId: string;
@@ -189,14 +187,12 @@ export type RootStackParamList = {
     };
   };
 
-  // Chat 11a — Blitz
   BlitzMatch: {
     avatarId: string;
     variant: BlitzVariantId;
-    durationSec?: number; // pressure only
+    durationSec?: number;
   };
 
-  // Chat 11 — Tournament Mode
   TournamentEntry: undefined;
   TournamentConfig: { type: 'human' | 'avatar' };
   TournamentLobby: {
@@ -230,15 +226,9 @@ const Stack = createStackNavigator<RootStackParamList>();
 // that carries them back after sign-in. Registered users see the
 // screen unchanged.
 //
-// The check is intentionally non-blocking: the wrapped component is
-// rendered immediately, and if the user is a guest, a redirect is
-// queued via useEffect. This avoids a flash of the Login screen
-// during the auth bootstrap where isAnonymous might briefly be true.
-//
-// Chat 12b — unchanged. AuthGate is only ever evaluated once a
-// session exists (the onboarding gate sits above it via the
-// navigator's initial route). A guest with a session still gets
-// redirected to Login as before.
+// Unchanged from Chat 11. The onboarding gate sits above it via
+// the navigator's initial route — AuthGate is only evaluated for
+// sessions that are already past onboarding.
 // ────────────────────────────────────────────────────────────
 function AuthGate({ component: Component, ...rest }: any) {
   const navigation = useNavigation<any>();
@@ -275,25 +265,33 @@ function AuthGate({ component: Component, ...rest }: any) {
 }
 
 export default function AppNavigator() {
-  // Chat 12b — dynamic initial route.
+  // Chat 12b (fix) — dynamic initial route.
   //
-  // `hasSession` decides whether we start on Onboarding or Home.
-  // The `key` on Stack.Navigator is derived from hasSession so a
-  // flip remounts the whole navigator with the new initial route.
+  // Derived from `isOnboarded` and `pendingConfirmation`, NOT from
+  // `hasSession`. Silent anon sessions created during Sign Up /
+  // Continue as Guest flip hasSession true immediately, but they do
+  // NOT flip isOnboarded. That is the bug this fixes.
   //
-  // This is the mechanism that auto-navigates to Home after a
-  // successful sign-in / sign-up (Bug E), and back to Onboarding
-  // after sessionReplaced or account deletion.
-  //
-  // We do NOT read authReady here — App.tsx only renders the
-  // navigator once authReady is true (it renders null before that).
-  const hasSession = useUserStore((s) => s.hasSession);
+  // The `key` on Stack.Navigator forces a full remount when the
+  // gate state changes, so the new initialRouteName takes effect.
+  const isOnboarded = useUserStore((s) => s.isOnboarded);
+  const pendingConfirmation = useUserStore((s) => s.pendingConfirmation);
 
-  const initialRouteName = hasSession ? 'Home' : 'Onboarding';
-  const navigatorKey = hasSession ? 'app' : 'onboarding';
+  let initialRouteName: keyof RootStackParamList = 'Onboarding';
+  let navigatorKey = 'onboarding';
+
+  if (isOnboarded) {
+    initialRouteName = 'Home';
+    navigatorKey = 'app';
+  } else if (pendingConfirmation) {
+    initialRouteName = 'VerifyEmail';
+    navigatorKey = 'verify';
+  }
 
   console.log(
-    '[NAV] rendering navigator | hasSession:', hasSession,
+    '[NAV] rendering navigator',
+    '| isOnboarded:', isOnboarded,
+    '| pendingConfirmation:', pendingConfirmation,
     '| initialRoute:', initialRouteName,
     '| key:', navigatorKey
   );
@@ -308,8 +306,9 @@ export default function AppNavigator() {
           cardStyle: { backgroundColor: '#0a0a0f' },
         }}
       >
-        {/* ─── Chat 12b — onboarding (only reached when no session) ─── */}
+        {/* ─── Onboarding flow ─── */}
         <Stack.Screen name="Onboarding" component={OnboardingScreen} />
+        <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} />
 
         {/* ─── Ungated — offline-safe ─── */}
         <Stack.Screen name="Home" component={HomeScreen} />
@@ -404,3 +403,4 @@ export default function AppNavigator() {
     </NavigationContainer>
   );
 }
+// src/navigation/AppNavigator.tsx

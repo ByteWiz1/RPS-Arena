@@ -2,40 +2,31 @@
 //
 // RPS Arena — link email + password to an anonymous account.
 //
-// Chat 9d:
-//   - Username field with debounced availability check.
-//   - Username is passed to supabase.auth.updateUser AND to
-//     profiles.username via linkEmailPassword.
-//   - After a successful link, the socket reconnects with a fresh
-//     JWT and re-identifies.
-//
-// Chat 12a:
-//   - After linkEmailPassword succeeds, writes profiles.email = the
-//     new email and profiles.is_guest = false directly via the
-//     Supabase client (RLS allows self-update of those fields).
-//   - Can be rendered two ways: inside AppNavigator (Settings or
-//     LoginScreen) or as a bare screen from Onboarding. Both call
-//     bootstrapAuth() after the link.
-//
-// Chat 12b:
-//   - Bug B fix: Onboarding is a route now, so back works. Removed
-//     the `isReady()` guards on navigation.
-//   - Bug C fix (part 1): username availability check is now
-//     race-guarded. Each keystroke increments a ref counter; a
-//     response is only applied if its request is still the latest.
-//     Without this, a slow response for keystroke N-2 can overwrite
-//     a fast response for keystroke N, showing the wrong status.
-//   - Bug C fix (part 2): debounce reduced from 400ms to 300ms.
-//   - Bug C fix (part 3): on timeout or transport failure, the
-//     client-side helper resolves with `{ available: false,
-//     uncertain: true, message: 'Couldn't check — try again' }`.
-//     The screen now renders that as a neutral/amber hint, NOT a red
-//     "taken" error, and does not block submit.
-//   - Bug C fix (part 4): on submit, if the check is uncertain or
-//     still in flight, we skip the client-side availability gate and
-//     let the server's `changeUsername` path re-validate. The server
-//     is authoritative.
-//   - Back button uses canGoBack()/goBack() with a fallback.
+// Chat 9d:  username field with debounced availability check.
+// Chat 12a: writes profiles.email + profiles.is_guest after link.
+// Chat 12b: back works; username check race-guarded; uncertain
+//           timeout handling.
+// Chat 12b (fix):
+//   - After linkEmailPassword succeeds, inspects the session's
+//     email_confirmed_at. If null (typical — a confirmation email
+//     was just sent), sets pendingConfirmation(email). The navigator
+//     key flips to 'verify'; AppNavigator remounts on VerifyEmail.
+//     Does NOT set isOnboarded.
+//   - If already confirmed (rare — Supabase's email confirmation may
+//     be disabled in the project), sets isOnboarded(true). The
+//     navigator remounts on Home.
+//   - Two entry paths now branch explicitly:
+//       * From Onboarding → Sign Up (isOnboarded === false):
+//           needsConfirmation → setPendingConfirmation; remount on
+//                                VerifyEmail.
+//           no confirmation   → setOnboarded(true); remount on Home.
+//       * From Settings → Save Progress (isOnboarded === true):
+//           needsConfirmation → setPendingConfirmation + alert +
+//                                navigation.goBack().
+//           no confirmation   → alert + navigation.goBack().
+//     The SignupLinkScreen is reached from both paths; branching at
+//     success lets the navigator handle the onboarding path and
+//     goBack handle the Settings path.
 //
 // APK: platform-agnostic. No web-only APIs used.
 
@@ -95,8 +86,7 @@ export default function SignupLinkScreen() {
 
   // Debounce timer for the availability check.
   const checkTimerRef = useRef<any>(null);
-  // Race guard. Incremented on each request. A response is only
-  // applied if its captured sequence equals the current value.
+  // Race guard. Incremented on each request.
   const checkSeqRef = useRef<number>(0);
   // Last username we successfully checked (for cache skip).
   const lastCheckedRef = useRef<string>('');
@@ -126,7 +116,6 @@ export default function SignupLinkScreen() {
       return;
     }
 
-    // Skip if we already know this exact name is available.
     if (
       trimmed === lastCheckedRef.current &&
       usernameCheckState === 'available'
@@ -134,11 +123,9 @@ export default function SignupLinkScreen() {
       return;
     }
 
-    // Debounce. Cancel any pending check.
     if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
 
     checkTimerRef.current = setTimeout(async () => {
-      // Bump sequence so any in-flight response is ignored.
       const seq = ++checkSeqRef.current;
       setUsernameCheckState('checking');
       setUsernameHint(null);
@@ -147,16 +134,12 @@ export default function SignupLinkScreen() {
       try {
         result = await checkUsernameAvailabilityOnServer(trimmed);
       } catch (e: any) {
-        // The helper should never throw, but be defensive.
         result = { available: false, uncertain: true, message: 'Check failed' };
       }
 
-      // Only apply if we are still the latest request.
       if (seq !== checkSeqRef.current) return;
 
       if (result.uncertain) {
-        // Timeout or transport failure. Neutral state — do NOT block
-        // submit. The server re-validates on the actual link call.
         lastCheckedRef.current = '';
         setUsernameCheckState('uncertain');
         setUsernameHint(result.message || "Couldn't check — try again");
@@ -187,8 +170,6 @@ export default function SignupLinkScreen() {
     const trimmedEmail = email.trim();
     if (!username.trim()) return 'Pick a username';
     if (usernameError) return usernameError;
-    // Block on 'checking' so we do not submit a name we have not
-    // verified. But allow 'uncertain' — server is authoritative.
     if (usernameCheckState === 'checking') return 'Checking username…';
     if (usernameCheckState === 'taken') {
       return usernameError || 'That username is already taken';
@@ -211,6 +192,13 @@ export default function SignupLinkScreen() {
     setLoading(true);
     setError(null);
 
+    // Capture whether the user was already onboarded BEFORE any
+    // session/profile changes happen. This tells us which entry
+    // path we came in on:
+    //   wasOnboarded === false → Onboarding → Sign Up
+    //   wasOnboarded === true  → Settings → Save Progress
+    const wasOnboarded = useUserStore.getState().isOnboarded;
+
     const trimmedUsername = username.trim().toLowerCase();
     const trimmedEmail = email.trim();
 
@@ -227,17 +215,8 @@ export default function SignupLinkScreen() {
       return;
     }
 
-    // Chat 12a — mark the profile as a member.
-    //
-    // linkEmailPassword calls auth.updateUser, which does NOT touch
-    // profiles.email or profiles.is_guest. We write those here.
-    //
-    // RLS: "profiles update own" allows self-update of email and
-    // is_guest (only is_premium and premium_since are pinned by
-    // WITH CHECK).
-    //
-    // Non-fatal on failure — but this is the primary path for
-    // setting email/is_guest, so we log clearly.
+    // Mark the profile as a member. linkEmailPassword's updateUser
+    // does NOT touch profiles.email or profiles.is_guest.
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const uid = sessionData?.session?.user?.id;
@@ -255,17 +234,12 @@ export default function SignupLinkScreen() {
             profileErr.message
           );
         }
-      } else {
-        console.log(
-          '[SIGNUP] no uid after linkEmailPassword — skipping profile mark'
-        );
       }
     } catch (e: any) {
       console.log('[SIGNUP] profile mark exception:', e?.message || e);
     }
 
-    // Reconnect the socket with the fresh (now-linked) JWT so the
-    // server's view of our auth state matches Supabase's.
+    // Reconnect the socket with the fresh (now-linked) JWT.
     try {
       await reconnectWithFreshJWT(getAccessToken);
       await identifyOnServer({
@@ -276,27 +250,90 @@ export default function SignupLinkScreen() {
       console.log('[SIGNUP] reconnect/identify failed:', e?.message);
     }
 
-    // Refresh the store. bootstrapAuth reads the fresh session and
-    // flips hasSession → true. The navigator key changes; AppNavigator
-    // remounts on Home.
+    // Determine confirmation state.
+    let isConfirmed = false;
+    let confirmedEmail: string | null = trimmedEmail;
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const u = sessionData?.session?.user;
+      confirmedEmail = u?.email || trimmedEmail;
+      isConfirmed = !!u?.email_confirmed_at;
+    } catch (e: any) {
+      console.log('[SIGNUP] session inspect failed:', e?.message);
+    }
+
+    // Refresh the store from the current session so username/email
+    // are populated for any subsequent screen. Do NOT let this flip
+    // isOnboarded for the signup path — see below.
     try {
       await bootstrapAuth();
     } catch (e: any) {
-      console.log('[SIGNUP] refresh after link failed:', e?.message);
+      console.log('[SIGNUP] bootstrapAuth after link failed:', e?.message);
     }
 
-    setLoading(false);
+    // ── Branch by entry path + confirmation state ──
+    //
+    // The unconfirmed case is the common one (Supabase sends a
+    // confirmation email). The confirmed case only happens if the
+    // Supabase project has email confirmation disabled, or if the
+    // user was already confirmed by some other route.
+    //
+    // bootstrapAuth may have set isOnboarded true (it treats an
+    // unconfirmed session as isOnboarded false, so for the signup
+    // path with unconfirmed email, isOnboarded stays false — good).
+    // But to be safe, explicitly control the flags here.
 
-    if (result.needsConfirmation) {
-      showAlert(
-        'Confirm your email',
-        `We sent a confirmation link to ${trimmedEmail}. Click it to finish linking your account.`
+    if (!isConfirmed) {
+      // Record the pending confirmation.
+      useUserStore.getState().setPendingConfirmation(confirmedEmail);
+      // Ensure isOnboarded is false for the signup path (the
+      // Settings path is already onboarded and we leave it alone).
+      if (!wasOnboarded) {
+        useUserStore.getState().setOnboarded(false);
+      }
+
+      if (wasOnboarded) {
+        // Settings → Save Progress path. The user is already using
+        // the app. Do not remount the navigator to VerifyEmail.
+        // Just alert and go back.
+        showAlert(
+          'Confirm your email',
+          `We sent a confirmation link to ${confirmedEmail}. Click it to finish linking your account.`
+        );
+        setLoading(false);
+        try {
+          navigation.goBack();
+        } catch {}
+        return;
+      }
+
+      // Signup path. The navigator key flips to 'verify'. The
+      // remount handles navigation to VerifyEmail. No alert needed
+      // — the VerifyEmail screen is the message.
+      setLoading(false);
+      console.log(
+        '[SIGNUP] success — pending confirmation, VerifyEmail will render'
       );
-    } else {
-      showAlert('Account linked', 'Your progress is now saved to this email.');
+      return;
     }
 
-    // No manual navigation. AppNavigator remounts on Home via the key.
+    // Confirmed email (rare).
+    if (wasOnboarded) {
+      // Settings path, already confirmed (Supabase confirmation off).
+      showAlert('Account linked', 'Your progress is now saved to this email.');
+      setLoading(false);
+      try {
+        navigation.goBack();
+      } catch {}
+      return;
+    }
+
+    // Signup path, already confirmed. Flip the gate. Navigator
+    // remounts on Home.
+    showAlert('Account linked', 'Your progress is now saved to this email.');
+    useUserStore.getState().setPendingConfirmation(null);
+    useUserStore.getState().setOnboarded(true);
+    setLoading(false);
     console.log('[SIGNUP] success — AppNavigator will remount on Home');
   };
 
@@ -318,7 +355,6 @@ export default function SignupLinkScreen() {
     if (usernameCheckState === 'taken') {
       return <XCircle size={18} color="#f87171" />;
     }
-    // idle and uncertain show no icon.
     return null;
   })();
 
@@ -544,3 +580,4 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+// src/screens/SignupLinkScreen.tsx

@@ -2,37 +2,35 @@
 //
 // RPS Arena — user/identity store.
 //
-// Chat 9 model:
-//   - Supabase Auth is the source of truth (session + profiles).
-//   - This store holds a resolved snapshot for the rest of the app.
-//   - `identity` is a UserIdentity-shaped cache for legacy consumers.
-//
+// Chat 9: Supabase Auth is the source of truth. This store holds a
+//         resolved snapshot for the rest of the app.
 // Chat 12a:
-//   - New `hasSession: boolean` — true iff a Supabase session exists.
-//   - New `isGuest: boolean` — profiles.is_guest (server-authoritative).
-//   - bootstrapAuth no longer auto-guests. Uses getExistingSession()
-//     (read-only). If no session → hasSession: false.
-//   - New setFromIdentify(reg) — App.tsx calls this after
-//     identifyOnServer so the store reflects the server's view.
-//   - setFromSession sets hasSession: true.
-//   - resetUser / clearUser clear hasSession to false.
-//
-// Chat 12b:
-//   - NO BEHAVIORAL CHANGES. AppNavigator derives its dynamic
-//     initial route and remount key from `hasSession`. Bootstrap
-//     flips hasSession correctly (Chat 12a). Sign-in/up auto-nav
-//     to Home is handled entirely by that mechanism.
-//   - Comment added on `resetUser()` noting that the identity cache
-//     is now cleared by `signOutLocal()` in supabase.ts, so this
-//     store method does not need to clear it again.
+//   - hasSession, isGuest, setFromIdentify, no auto-guest.
+// Chat 12b (fix):
+//   - NEW: isOnboarded — the render gate. Distinct from hasSession.
+//     hasSession answers "does a Supabase session exist?".
+//     isOnboarded answers "has the user made an explicit choice to
+//     enter the app (sign in / sign up / continue as guest)?".
+//     Silent sessions created during Sign Up or Continue as Guest
+//     flip hasSession true immediately, but do NOT flip isOnboarded.
+//     That is what the previous Chat 12b got wrong: it keyed the
+//     navigator on hasSession, so the navigator remounted mid-flow.
+//   - NEW: pendingConfirmation + pendingEmail — set when the user
+//     has an unconfirmed email session. AppNavigator uses these to
+//     route to VerifyEmail instead of Onboarding or Home.
+//   - bootstrapAuth now computes isOnboarded from the session:
+//       no session                     → isOnboarded false
+//       session, user is anonymous     → isOnboarded true (chose guest)
+//       session, email_confirmed_at set → isOnboarded true
+//       session, unconfirmed email      → isOnboarded false, pending
+//   - resetUser / clearUser reset all new fields.
 //
 // Lifecycle:
-//   - bootstrapAuth() is called from App.tsx on mount and after
-//     sign-in / link. It resolves the session (never creates one),
-//     loads the profiles row, and populates this store.
+//   - bootstrapAuth() is called from App.tsx on mount and from
+//     LoginScreen / SignupLinkScreen after a successful sign-in or
+//     link. It resolves the session (never creates one).
 //   - updateUser() writes to the @rps_identity cache but NOT to the
-//     server. Server-side username changes go through
-//     changeUsernameOnServer() first.
+//     server.
 //   - resetUser() is called on sessionReplaced (caller already
 //     called signOutLocal() which cleared the identity cache).
 //   - clearUser() is called on deleteAccount.
@@ -66,6 +64,13 @@ interface UserState {
   hasSession: boolean;     // a Supabase session currently exists
   loaded: boolean;         // kept for compat with old consumers
 
+  // ── Chat 12b: render gate ──
+  // isOnboarded drives the AppNavigator key. See header comment.
+  isOnboarded: boolean;
+  // Set when the user has an unconfirmed email session.
+  pendingConfirmation: boolean;
+  pendingEmail: string | null;
+
   // ── Cache mirrored for legacy consumers ──
   identity: UserIdentity | null;
 
@@ -86,7 +91,7 @@ interface UserState {
   }) => void;
 
   // Server identify payload. Authoritative for isGuest / isPremium /
-  // email. Called after identifyOnServer().
+  // email.
   setFromIdentify: (r: {
     username?: string | null;
     avatar?: string | null;
@@ -96,6 +101,10 @@ interface UserState {
     isGuest?: boolean;
     isAnonymous?: boolean;
   }) => void;
+
+  // Chat 12b — onboarding flow control.
+  setOnboarded: (v: boolean) => void;
+  setPendingConfirmation: (email: string | null) => void;
 
   updateUser: (
     updates: Partial<Pick<UserIdentity, 'username' | 'avatar'>>
@@ -124,6 +133,65 @@ function buildIdentityCache(
   };
 }
 
+// Chat 12b — compute isOnboarded from a session + profile.
+//
+//   no session                          → false
+//   session.user.is_anonymous (guest)   → true  (user chose guest previously)
+//   session.user.email_confirmed_at set → true  (member, confirmed)
+//   session.user.email, unconfirmed     → false (waiting for confirmation)
+//
+// The profile is passed so we can prefer profiles.is_guest over the
+// JWT heuristic for the anonymous check (matches identify's logic).
+function computeOnboarded(
+  session: any,
+  profile: any
+): {
+  isOnboarded: boolean;
+  pendingConfirmation: boolean;
+  pendingEmail: string | null;
+} {
+  if (!session || !session.user) {
+    return {
+      isOnboarded: false,
+      pendingConfirmation: false,
+      pendingEmail: null,
+    };
+  }
+
+  const u = session.user;
+  const meta: any = u.user_metadata || {};
+  const isAnonByJwt = !u.email || meta.is_anonymous === true;
+  const isGuestByProfile =
+    profile && typeof profile.is_guest === 'boolean'
+      ? profile.is_guest
+      : null;
+
+  const isAnon = isGuestByProfile !== null ? isGuestByProfile : isAnonByJwt;
+
+  if (isAnon) {
+    return {
+      isOnboarded: true,
+      pendingConfirmation: false,
+      pendingEmail: null,
+    };
+  }
+
+  if (u.email_confirmed_at) {
+    return {
+      isOnboarded: true,
+      pendingConfirmation: false,
+      pendingEmail: null,
+    };
+  }
+
+  // Member with an unconfirmed email.
+  return {
+    isOnboarded: false,
+    pendingConfirmation: true,
+    pendingEmail: u.email || null,
+  };
+}
+
 export const useUserStore = create<UserState>((set, get) => ({
   userId: null,
   email: null,
@@ -139,13 +207,17 @@ export const useUserStore = create<UserState>((set, get) => ({
   hasSession: false,
   loaded: false,
 
+  isOnboarded: false,
+  pendingConfirmation: false,
+  pendingEmail: null,
+
   identity: null,
 
   // ────────────────────────────────────────────────────────
   // bootstrapAuth — full boot from a cold start.
   //
-  // NO auto-guest. Reads the existing session. If none, sets
-  // hasSession: false and lets AppNavigator render Onboarding.
+  // Never creates a session. If none exists, isOnboarded stays
+  // false and AppNavigator renders Onboarding.
   // ────────────────────────────────────────────────────────
   bootstrapAuth: async () => {
     const session = await getExistingSession();
@@ -161,6 +233,9 @@ export const useUserStore = create<UserState>((set, get) => ({
         premiumSince: null,
         identity: null,
         hasSession: false,
+        isOnboarded: false,
+        pendingConfirmation: false,
+        pendingEmail: null,
         authReady: true,
         loaded: true,
       });
@@ -172,7 +247,6 @@ export const useUserStore = create<UserState>((set, get) => ({
     const meta: any = u.user_metadata || {};
     const jwtSaysAnon = !u.email || meta.is_anonymous === true;
 
-    // isGuest: profiles.is_guest is authoritative when present.
     const isGuest =
       profile && typeof profile.is_guest === 'boolean'
         ? profile.is_guest
@@ -188,6 +262,8 @@ export const useUserStore = create<UserState>((set, get) => ({
       await saveIdentity(identity);
     }
 
+    const onboarded = computeOnboarded(session, profile);
+
     set({
       userId: u.id,
       email,
@@ -199,6 +275,9 @@ export const useUserStore = create<UserState>((set, get) => ({
       premiumSince: profile?.premium_since || null,
       identity,
       hasSession: true,
+      isOnboarded: onboarded.isOnboarded,
+      pendingConfirmation: onboarded.pendingConfirmation,
+      pendingEmail: onboarded.pendingEmail,
       authReady: true,
       loaded: true,
     });
@@ -247,12 +326,6 @@ export const useUserStore = create<UserState>((set, get) => ({
     });
   },
 
-  // ────────────────────────────────────────────────────────
-  // setFromIdentify — server identify payload.
-  //
-  // Authoritative for isGuest + isPremium + email. Every field is
-  // optional; undefined leaves the current value untouched.
-  // ────────────────────────────────────────────────────────
   setFromIdentify: (r) => {
     const {
       userId,
@@ -285,6 +358,19 @@ export const useUserStore = create<UserState>((set, get) => ({
   },
 
   // ────────────────────────────────────────────────────────
+  // Chat 12b — onboarding flow control.
+  // ────────────────────────────────────────────────────────
+  setOnboarded: (v) => set({ isOnboarded: !!v }),
+
+  setPendingConfirmation: (email) => {
+    if (!email) {
+      set({ pendingConfirmation: false, pendingEmail: null });
+      return;
+    }
+    set({ pendingConfirmation: true, pendingEmail: email });
+  },
+
+  // ────────────────────────────────────────────────────────
   // updateUser — local-only update of username/avatar.
   // ────────────────────────────────────────────────────────
   updateUser: async (updates) => {
@@ -308,9 +394,6 @@ export const useUserStore = create<UserState>((set, get) => ({
     });
   },
 
-  // ────────────────────────────────────────────────────────
-  // refreshPremium — re-read profiles.is_premium.
-  // ────────────────────────────────────────────────────────
   refreshPremium: async () => {
     const profile = await fetchProfile();
     if (!profile) return;
@@ -322,10 +405,8 @@ export const useUserStore = create<UserState>((set, get) => ({
 
   // ────────────────────────────────────────────────────────
   // resetUser — soft reset, no Supabase sign-out.
-  //
-  // Caller is responsible for calling signOutLocal() first. That
-  // function clears the @rps_identity cache (Chat 12b fix). This
-  // method only clears the in-memory state.
+  // Caller already called signOutLocal() (which cleared the
+  // identity cache).
   // ────────────────────────────────────────────────────────
   resetUser: () => {
     set({
@@ -339,6 +420,9 @@ export const useUserStore = create<UserState>((set, get) => ({
       premiumSince: null,
       identity: null,
       hasSession: false,
+      isOnboarded: false,
+      pendingConfirmation: false,
+      pendingEmail: null,
       authReady: true,
       loaded: true,
     });
@@ -365,6 +449,9 @@ export const useUserStore = create<UserState>((set, get) => ({
       premiumSince: null,
       identity: null,
       hasSession: false,
+      isOnboarded: false,
+      pendingConfirmation: false,
+      pendingEmail: null,
       authReady: false,
       loaded: true,
     });

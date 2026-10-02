@@ -3,24 +3,22 @@
 // RPS Arena — first-open gate.
 //
 // Chat 12a: rendered OUTSIDE the navigator by App.tsx's render-swap.
-//           Took onSignIn / onSignUp / onContinueAsGuest callbacks
-//           because it had no `navigation` prop.
-// Chat 12b: rendered INSIDE AppNavigator as a registered route.
-//   - Removed the callback props. The screen now uses useNavigation()
-//     directly. "Sign In" navigates to Login. "Sign Up" navigates to
-//     SignupLink. "Continue as Guest" creates the session and lets
-//     the navigator's key swap to Home.
-//   - The Sign Up flow still creates an anonymous session WITHOUT
-//     calling bootstrapAuth (so the store's hasSession does not flip
-//     before the navigation lands). SignupLinkScreen calls
-//     bootstrapAuth itself after the link. See Chat 12a Fix B.
-//   - Navigation is native now: SignupLink's back button returns
-//     here via goBack(). No more "back does nothing" bug.
+// Chat 12b: registered as a route, but the navigator key was derived
+//           from `hasSession` — which flipped mid-flow on Sign Up /
+//           Guest (silent session creation). That was the bug.
+// Chat 12b (fix): the navigator key is now derived from
+//           `isOnboarded`. This screen explicitly sets `isOnboarded`
+//           on the Guest path so the navigator swaps to Home. The
+//           Sign In and Sign Up paths do NOT set it here — Sign In
+//           sets it from LoginScreen on success, Sign Up sets
+//           `pendingConfirmation` from SignupLinkScreen and lets
+//           VerifyEmail flip it when the email is confirmed.
 //
 // Reachability:
-//   - Initial route when hasSession is false.
-//   - After sessionReplaced / deleteAccount, the navigator key flips
-//     back and this screen renders again.
+//   - Initial route when `isOnboarded` is false and no confirmation
+//     is pending.
+//   - After sessionReplaced / signOut, resetUser clears
+//     `isOnboarded` and the navigator remounts here.
 //
 // APK: platform-agnostic. No web-only APIs used.
 
@@ -50,23 +48,25 @@ export default function OnboardingScreen() {
   //
   // Always creates the Supabase anonymous session.
   //
-  // For 'guest'   → also calls bootstrapAuth() so the store sees the
-  //                 session immediately. hasSession flips true, the
-  //                 navigator key changes, and AppNavigator remounts
-  //                 on Home. The user never sees Onboarding again.
+  // For 'guest'   → also calls bootstrapAuth() so the store sees
+  //                 the session immediately, then explicitly sets
+  //                 isOnboarded(true). The navigator key flips from
+  //                 'onboarding' to 'app'; AppNavigator remounts on
+  //                 Home.
   //
-  // For 'signup'  → deliberately does NOT call bootstrapAuth(). The
-  //                 store's hasSession stays false so the navigator
-  //                 does not swap yet. We navigate to SignupLink,
-  //                 which calls bootstrapAuth() itself after the
-  //                 email link succeeds. That is when hasSession
-  //                 flips and the navigator swaps to Home.
+  // For 'signup'  → deliberately does NOT call bootstrapAuth() and
+  //                 does NOT set isOnboarded. The navigator key
+  //                 stays 'onboarding'. We navigate to SignupLink,
+  //                 which will set pendingConfirmation after the
+  //                 email is linked. Only when the user clicks the
+  //                 confirmation email does onAuthStateChange flip
+  //                 isOnboarded (from App.tsx).
   //
-  //                 If bootstrapAuth ran here, the navigator key
-  //                 would flip immediately after signInAnonymously,
-  //                 and the user would land on Home as a guest
-  //                 instead of on SignupLink. (This was Chat 12a's
-  //                 race; preserved fix.)
+  //                 If bootstrapAuth ran here, it would see the
+  //                 anonymous session and (correctly, for the guest
+  //                 case) set isOnboarded true — which would land
+  //                 the user on Home as a guest instead of on
+  //                 SignupLink. Preserved from Chat 12a Fix B.
   const startAnonymous = async (
     kind: 'signup' | 'guest'
   ): Promise<boolean> => {
@@ -91,9 +91,17 @@ export default function OnboardingScreen() {
             e?.message
           );
         }
+        // Explicit flip. bootstrapAuth's computeOnboarded already
+        // sets isOnboarded true for an anonymous session, but
+        // calling this here makes the intent obvious and covers any
+        // edge where bootstrapAuth partially failed.
+        try {
+          useUserStore.getState().setOnboarded(true);
+        } catch (e: any) {
+          console.log('[ONBOARDING] setOnboarded(true) failed:', e?.message);
+        }
       }
-      // For 'signup': skip bootstrapAuth(). SignupLinkScreen will
-      // call it after linkEmailPassword succeeds.
+      // For 'signup': skip bootstrapAuth and skip setOnboarded.
 
       return true;
     } catch (e: any) {
@@ -122,7 +130,7 @@ export default function OnboardingScreen() {
     const ok = await startAnonymous('guest');
     setBusy(null);
     if (ok) {
-      // Session created and store populated. The navigator key
+      // Session created and isOnboarded flipped. The navigator key
       // changes and AppNavigator remounts on Home. No explicit
       // navigation needed here.
       console.log('[ONBOARDING] Guest — session created, navigator will swap');
@@ -326,3 +334,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
 });
+// src/screens/OnboardingScreen.tsx
