@@ -6,27 +6,25 @@
 // Chat 12a: writes profiles.email + profiles.is_guest after link.
 // Chat 12b: back works; username check race-guarded; uncertain
 //           timeout handling.
-// Chat 12b (fix):
-//   - After linkEmailPassword succeeds, inspects the session's
-//     email_confirmed_at. If null (typical — a confirmation email
-//     was just sent), sets pendingConfirmation(email). The navigator
-//     key flips to 'verify'; AppNavigator remounts on VerifyEmail.
-//     Does NOT set isOnboarded.
-//   - If already confirmed (rare — Supabase's email confirmation may
-//     be disabled in the project), sets isOnboarded(true). The
-//     navigator remounts on Home.
-//   - Two entry paths now branch explicitly:
-//       * From Onboarding → Sign Up (isOnboarded === false):
-//           needsConfirmation → setPendingConfirmation; remount on
-//                                VerifyEmail.
-//           no confirmation   → setOnboarded(true); remount on Home.
-//       * From Settings → Save Progress (isOnboarded === true):
-//           needsConfirmation → setPendingConfirmation + alert +
-//                                navigation.goBack().
-//           no confirmation   → alert + navigation.goBack().
-//     The SignupLinkScreen is reached from both paths; branching at
-//     success lets the navigator handle the onboarding path and
-//     goBack handle the Settings path.
+// Chat 12c: Onboarding gate reverted.
+//   - Removed all isOnboarded / pendingConfirmation handling.
+//   - After successful link:
+//       * If email is already confirmed (rare, Supabase project has
+//         confirmation off) → alert + goBack.
+//       * If unconfirmed → set submitted=true. The screen switches
+//         to an inline "Check your email" view. Same screen, no
+//         navigation, no VerifyEmail route.
+//   - After the user clicks the confirmation link, App.tsx's
+//     onAuthStateChange handler runs bootstrapAuth(). The store
+//     updates with the new username + is_guest=false. Nothing else
+//     needs to happen — the user is already on Home or wherever
+//     they were.
+//   - Back: goBack() to whatever pushed this screen.
+//
+// Reachable from:
+//   - Home guest banner ("Save Progress")
+//   - SettingsScreen account section ("Save Progress")
+//   - LoginScreen ("Create Account")
 //
 // APK: platform-agnostic. No web-only APIs used.
 
@@ -49,6 +47,7 @@ import {
   ShieldCheck,
   CheckCircle,
   XCircle,
+  CheckCircle2,
 } from 'lucide-react-native';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
@@ -65,13 +64,13 @@ import {
 import { useUserStore } from '../store/userStore';
 import { showAlert } from '../utils/alert';
 
-// Username check states.
 type CheckState = 'idle' | 'checking' | 'available' | 'taken' | 'uncertain';
 
 export default function SignupLinkScreen() {
   const navigation = useNavigation<any>();
   const { username: currentUsername, avatar, bootstrapAuth } = useUserStore();
 
+  // ── Form state ──
   const [username, setUsername] = useState(currentUsername || '');
   const [usernameError, setUsernameError] = useState<string | null>(null);
   const [usernameCheckState, setUsernameCheckState] =
@@ -84,14 +83,21 @@ export default function SignupLinkScreen() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Debounce timer for the availability check.
+  // ── Post-submit state ──
+  // When true, we render the "Check your email" view instead of the
+  // form. Reset by going back.
+  const [submitted, setSubmitted] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState<string>('');
+
+  // ── Availability check plumbing ──
   const checkTimerRef = useRef<any>(null);
-  // Race guard. Incremented on each request.
   const checkSeqRef = useRef<number>(0);
-  // Last username we successfully checked (for cache skip).
   const lastCheckedRef = useRef<string>('');
 
   useEffect(() => {
+    // Skip the check when we are showing the post-submit view.
+    if (submitted) return;
+
     const trimmed = username.trim().toLowerCase();
     setUsernameError(null);
     setUsernameHint(null);
@@ -164,7 +170,7 @@ export default function SignupLinkScreen() {
       if (checkTimerRef.current) clearTimeout(checkTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [username]);
+  }, [username, submitted]);
 
   const validate = (): string | null => {
     const trimmedEmail = email.trim();
@@ -192,13 +198,6 @@ export default function SignupLinkScreen() {
     setLoading(true);
     setError(null);
 
-    // Capture whether the user was already onboarded BEFORE any
-    // session/profile changes happen. This tells us which entry
-    // path we came in on:
-    //   wasOnboarded === false → Onboarding → Sign Up
-    //   wasOnboarded === true  → Settings → Save Progress
-    const wasOnboarded = useUserStore.getState().isOnboarded;
-
     const trimmedUsername = username.trim().toLowerCase();
     const trimmedEmail = email.trim();
 
@@ -216,7 +215,9 @@ export default function SignupLinkScreen() {
     }
 
     // Mark the profile as a member. linkEmailPassword's updateUser
-    // does NOT touch profiles.email or profiles.is_guest.
+    // does NOT touch profiles.email or profiles.is_guest, because
+    // the handle_new_user trigger only fires on auth.users INSERT,
+    // not on UPDATE.
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const uid = sessionData?.session?.user?.id;
@@ -250,98 +251,39 @@ export default function SignupLinkScreen() {
       console.log('[SIGNUP] reconnect/identify failed:', e?.message);
     }
 
-    // Determine confirmation state.
-    let isConfirmed = false;
-    let confirmedEmail: string | null = trimmedEmail;
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const u = sessionData?.session?.user;
-      confirmedEmail = u?.email || trimmedEmail;
-      isConfirmed = !!u?.email_confirmed_at;
-    } catch (e: any) {
-      console.log('[SIGNUP] session inspect failed:', e?.message);
-    }
-
     // Refresh the store from the current session so username/email
-    // are populated for any subsequent screen. Do NOT let this flip
-    // isOnboarded for the signup path — see below.
+    // are populated for any subsequent screen. If the email is
+    // already confirmed, this flips isGuest to false via the profile.
     try {
       await bootstrapAuth();
     } catch (e: any) {
       console.log('[SIGNUP] bootstrapAuth after link failed:', e?.message);
     }
 
-    // ── Branch by entry path + confirmation state ──
-    //
-    // The unconfirmed case is the common one (Supabase sends a
-    // confirmation email). The confirmed case only happens if the
-    // Supabase project has email confirmation disabled, or if the
-    // user was already confirmed by some other route.
-    //
-    // bootstrapAuth may have set isOnboarded true (it treats an
-    // unconfirmed session as isOnboarded false, so for the signup
-    // path with unconfirmed email, isOnboarded stays false — good).
-    // But to be safe, explicitly control the flags here.
-
-    if (!isConfirmed) {
-      // Record the pending confirmation.
-      useUserStore.getState().setPendingConfirmation(confirmedEmail);
-      // Ensure isOnboarded is false for the signup path (the
-      // Settings path is already onboarded and we leave it alone).
-      if (!wasOnboarded) {
-        useUserStore.getState().setOnboarded(false);
-      }
-
-      if (wasOnboarded) {
-        // Settings → Save Progress path. The user is already using
-        // the app. Do not remount the navigator to VerifyEmail.
-        // Just alert and go back.
-        showAlert(
-          'Confirm your email',
-          `We sent a confirmation link to ${confirmedEmail}. Click it to finish linking your account.`
-        );
-        setLoading(false);
-        try {
-          navigation.goBack();
-        } catch {}
-        return;
-      }
-
-      // Signup path. The navigator key flips to 'verify'. The
-      // remount handles navigation to VerifyEmail. No alert needed
-      // — the VerifyEmail screen is the message.
-      setLoading(false);
-      console.log(
-        '[SIGNUP] success — pending confirmation, VerifyEmail will render'
-      );
-      return;
-    }
-
-    // Confirmed email (rare).
-    if (wasOnboarded) {
-      // Settings path, already confirmed (Supabase confirmation off).
-      showAlert('Account linked', 'Your progress is now saved to this email.');
-      setLoading(false);
-      try {
-        navigation.goBack();
-      } catch {}
-      return;
-    }
-
-    // Signup path, already confirmed. Flip the gate. Navigator
-    // remounts on Home.
-    showAlert('Account linked', 'Your progress is now saved to this email.');
-    useUserStore.getState().setPendingConfirmation(null);
-    useUserStore.getState().setOnboarded(true);
     setLoading(false);
-    console.log('[SIGNUP] success — AppNavigator will remount on Home');
+
+    // Determine whether confirmation is pending.
+    if (result.needsConfirmation) {
+      // Switch to inline "Check your email" view.
+      setSubmittedEmail(trimmedEmail);
+      setSubmitted(true);
+      return;
+    }
+
+    // Already confirmed. Alert + go back.
+    showAlert('Account linked', 'Your progress is now saved to this email.');
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Home');
+    }
   };
 
   const handleBack = () => {
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
-      navigation.navigate('Onboarding');
+      navigation.navigate('Home');
     }
   };
 
@@ -358,6 +300,74 @@ export default function SignupLinkScreen() {
     return null;
   })();
 
+  // ── Post-submit view: "Check your email" ──
+  if (submitted) {
+    return (
+      <ScreenContainer>
+        <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+          <View style={styles.header}>
+            <TouchableOpacity onPress={handleBack} style={styles.backButton}>
+              <ChevronLeft size={26} color="#e94560" />
+            </TouchableOpacity>
+            <Text style={styles.headerTitle}>Confirm Email</Text>
+            <View style={styles.placeholder} />
+          </View>
+
+          <ScreenScroll contentStyle={styles.scrollContent} headerHeight={70}>
+            <View style={styles.iconWrap}>
+              <Mail size={44} color="#4facfe" />
+            </View>
+
+            <Text style={styles.headline}>Check your inbox</Text>
+
+            <Text style={styles.subhead}>We sent a confirmation link to:</Text>
+
+            <View style={styles.emailBox}>
+              <Text style={styles.emailText} numberOfLines={1}>
+                {submittedEmail}
+              </Text>
+            </View>
+
+            <Text style={styles.instructions}>
+              Click the link in that email to finish setting up your
+              account. Everything you've earned as a guest stays with
+              you — same stats, same avatars, same name.
+            </Text>
+
+            <View style={styles.tipsBox}>
+              <Text style={styles.tipsTitle}>Didn't get it?</Text>
+              <Text style={styles.tipsLine}>
+                • Check your spam or promotions folder
+              </Text>
+              <Text style={styles.tipsLine}>
+                • Make sure the address above is correct
+              </Text>
+              <Text style={styles.tipsLine}>
+                • You can close this screen and keep playing
+              </Text>
+            </View>
+
+            <View style={styles.doneBox}>
+              <CheckCircle2 size={18} color="#4ade80" />
+              <Text style={styles.doneText}>
+                You're all set. Continue playing as a guest until you
+                confirm.
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.primary}
+              onPress={handleBack}
+            >
+              <Text style={styles.primaryText}>Back</Text>
+            </TouchableOpacity>
+          </ScreenScroll>
+        </SafeAreaView>
+      </ScreenContainer>
+    );
+  }
+
+  // ── Form view ──
   return (
     <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -397,9 +407,7 @@ export default function SignupLinkScreen() {
             {usernameStatus}
           </View>
 
-          {usernameError && (
-            <Text style={styles.error}>{usernameError}</Text>
-          )}
+          {usernameError && <Text style={styles.error}>{usernameError}</Text>}
 
           {!usernameError && usernameHint && (
             <Text style={styles.hintText}>{usernameHint}</Text>
@@ -562,12 +570,76 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
 
+  // ── Post-submit "Check your email" styles ──
+  emailBox: {
+    backgroundColor: 'rgba(79, 172, 254, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(79, 172, 254, 0.3)',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  emailText: {
+    color: '#4facfe',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  instructions: {
+    fontSize: 14,
+    color: '#5a5a7a',
+    lineHeight: 20,
+    textAlign: 'center',
+    marginBottom: 24,
+  },
+  tipsBox: {
+    backgroundColor: 'rgba(255,255,255,0.03)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 20,
+  },
+  tipsTitle: {
+    color: '#8a8a9a',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  tipsLine: {
+    color: '#5a5a7a',
+    fontSize: 13,
+    lineHeight: 20,
+  },
+  doneBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(74, 222, 128, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(74, 222, 128, 0.25)',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 20,
+  },
+  doneText: {
+    flex: 1,
+    color: '#4ade80',
+    fontSize: 13,
+    lineHeight: 18,
+  },
+
   primary: {
     backgroundColor: '#4facfe',
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
-    marginTop: 12,
+    marginTop: 8,
   },
   primaryDisabled: { opacity: 0.6 },
   primaryText: { color: '#ffffff', fontSize: 16, fontWeight: '700' },

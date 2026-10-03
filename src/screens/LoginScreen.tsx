@@ -5,24 +5,23 @@
 // Chat 9: email + password login.
 // Chat 12a: single "Email or username" field, resolve username → email.
 // Chat 12b: back works, no manual nav on plain login.
-// Chat 12b (fix):
-//   - On success, explicitly sets isOnboarded(true) so the navigator
-//     key flips regardless of any bootstrapAuth edge case.
-//   - After signInWithEmail, checks session.user.email_confirmed_at.
-//     If null (unconfirmed), routes to VerifyEmail by setting
-//     pendingConfirmation(email). Does NOT set isOnboarded.
-//   - Removed the duplicate "Create or link an account instead"
-//     button. Only one CTA remains: "Don't have an account?
-//     Create Account".
-//   - Return-to-deep-link path uses navigationRef after a 100ms
-//     delay so it lands on the fresh navigator stack.
-//   - Uses the top-level `supabase` export (no dynamic import).
+// Chat 12b (fix): unconfirmed-email routing to VerifyEmail.
+// Chat 12c: Onboarding gate reverted.
+//   - Removed all isOnboarded / pendingConfirmation references.
+//   - On success: just bootstrapAuth() + socket reconnect, then
+//     navigation.goBack() to wherever we came from (Home banner,
+//     Settings, AuthGate redirect). If nothing to go back to
+//     (deep-link entry, no prior screen), fall back to reset to Home.
+//   - Unconfirmed email: Supabase signs the user in anyway. We let
+//     them in (Option A1). Email confirmation is a soft gate in
+//     this chat — the confirm link still updates profiles via the
+//     onAuthStateChange handler in App.tsx.
+//   - Kept: returnTo routing for deep links (AuthGate + tournament).
 //
 // Reachable from:
-//   - OnboardingScreen "Sign In"
-//   - SettingsScreen "Sign in" (anonymous users)
+//   - Home guest banner ("Sign In")
+//   - SettingsScreen account section ("Sign In")
 //   - App.tsx sessionReplaced handler (Option X)
-//   - Home guest banner
 //   - Deep-link routing when a guest opens a tournament link.
 //   - AuthGate redirects from gated routes
 //
@@ -45,7 +44,6 @@ import ScreenScroll from '../components/ScreenScroll';
 import {
   signInWithEmail,
   getAccessToken,
-  supabase,
 } from '../services/supabase';
 import {
   getSocket,
@@ -65,7 +63,7 @@ export default function LoginScreen() {
   const route = useRoute<any>();
   const { bootstrapAuth } = useUserStore();
 
-  // Chat 11 — return path.
+  // Chat 11 — return path for deep links and AuthGate redirects.
   const returnTo: string | undefined = route?.params?.returnTo;
   const returnParams: any = route?.params?.returnParams;
 
@@ -111,7 +109,7 @@ export default function LoginScreen() {
       emailToUse = resolved.email;
     }
 
-    // 2. Sign in with Supabase using the resolved email.
+    // 2. Sign in with Supabase.
     const result = await signInWithEmail(emailToUse, password);
     if (!result.success) {
       setLoading(false);
@@ -119,58 +117,14 @@ export default function LoginScreen() {
       return;
     }
 
-    // 3. Check whether the email is confirmed. Supabase's
-    //    signInWithPassword succeeds even for unconfirmed users when
-    //    email confirmation is enabled. We detect that and route to
-    //    VerifyEmail instead of Home.
-    let isConfirmed = true;
-    let confirmedEmail: string | null = null;
-    try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const u = sessionData?.session?.user;
-      confirmedEmail = u?.email || emailToUse;
-      isConfirmed = !!u?.email_confirmed_at;
-    } catch (e: any) {
-      console.log('[LOGIN] session inspect failed:', e?.message);
-    }
-
-    if (!isConfirmed) {
-      setLoading(false);
-      console.log(
-        '[LOGIN] signed in but email unconfirmed — routing to VerifyEmail'
-      );
-      try {
-        // Populate the store from the session so VerifyEmailScreen
-        // can read a real username/email.
-        await bootstrapAuth();
-      } catch (e: any) {
-        console.log(
-          '[LOGIN] bootstrapAuth (unconfirmed) failed:',
-          e?.message
-        );
-      }
-      // Override whatever bootstrapAuth computed for isOnboarded,
-      // and set the pending-confirmation state. The navigator key
-      // flips to 'verify'; AppNavigator remounts on VerifyEmail.
-      useUserStore.getState().setOnboarded(false);
-      useUserStore.getState().setPendingConfirmation(confirmedEmail);
-      return;
-    }
-
-    // 4. Confirmed. Reload userStore. bootstrapAuth flips hasSession
-    //    and (for a confirmed session) isOnboarded. The navigator
-    //    key changes and AppNavigator remounts on Home.
+    // 3. Reload the store from the fresh session.
     try {
       await bootstrapAuth();
     } catch (e: any) {
       console.log('[LOGIN] bootstrapAuth after login failed:', e?.message);
     }
 
-    // Explicit flip — belt-and-braces.
-    useUserStore.getState().setOnboarded(true);
-    useUserStore.getState().setPendingConfirmation(null);
-
-    // 5. Reconnect socket with the fresh JWT.
+    // 4. Reconnect socket + identify.
     try {
       disconnectFromServer();
       await connectToServer(getAccessToken);
@@ -204,35 +158,42 @@ export default function LoginScreen() {
 
     setLoading(false);
 
-    // 6. returnTo navigation.
+    // 5. Navigation.
     //
-    // For a plain login (no returnTo), the navigator remount on
-    // isOnboarded=true lands on Home. Show a welcome alert.
-    //
-    // For a returnTo (deep link / AuthGate), navigate explicitly
-    // via navigationRef, which survives the navigator remount.
+    // If returnTo was set (deep link / AuthGate), navigate there.
+    // Otherwise goBack() to whatever opened this screen (Home banner,
+    // Settings). If there is no history (deep-link entry), reset to
+    // Home.
     if (returnTo) {
-      console.log('[LOGIN] success — will return to', returnTo, returnParams);
-      setTimeout(() => {
-        try {
-          if (navigationRef.isReady()) {
-            (navigationRef.navigate as any)(
-              returnTo,
-              returnParams || undefined
-            );
-            console.log('[LOGIN] returnTo navigation sent via navigationRef');
-          } else {
-            console.log('[LOGIN] returnTo deferred — navigationRef not ready');
-          }
-        } catch (e: any) {
-          console.log('[LOGIN] returnTo navigation failed:', e?.message);
+      console.log('[LOGIN] success — returning to', returnTo, returnParams);
+      try {
+        if (navigationRef.isReady()) {
+          (navigationRef.navigate as any)(
+            returnTo,
+            returnParams || undefined
+          );
+        } else if (navigation?.isReady?.()) {
+          (navigation.replace as any)(
+            returnTo,
+            returnParams || undefined
+          );
         }
-      }, 100);
+      } catch (e: any) {
+        console.log('[LOGIN] returnTo navigation failed:', e?.message);
+      }
       return;
     }
 
+    if (navigation.canGoBack()) {
+      console.log('[LOGIN] success — goBack');
+      showAlert('Welcome back', 'You are signed in.');
+      navigation.goBack();
+      return;
+    }
+
+    console.log('[LOGIN] success — reset to Home');
     showAlert('Welcome back', 'You are signed in.');
-    // No navigation — AppNavigator remounts on Home via the key.
+    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   };
 
   const goToSignup = () => {
@@ -243,7 +204,7 @@ export default function LoginScreen() {
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
-      navigation.navigate('Onboarding');
+      navigation.navigate('Home');
     }
   };
 

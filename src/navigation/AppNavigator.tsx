@@ -8,29 +8,21 @@
 // Chat 11a — register Blitz Match.
 // Chat 11  — register Tournament screens + AuthGate for gated routes.
 // Chat 12a — onboarding lived outside the navigator (render-swap).
-// Chat 12b — onboarding became a route, but the navigator key was
-//            derived from `hasSession` — which flips as soon as a
-//            silent anon session is created during Sign Up / Guest.
-//            That broke the flow: the navigator remounted mid-onboarding.
-// Chat 12b (fix):
-//   - The navigator key and initial route are now derived from
-//     `isOnboarded` (and `pendingConfirmation`), NOT `hasSession`.
+// Chat 12b — onboarding became a route, keyed on hasSession, then
+//            isOnboarded.
+// Chat 12c — Onboarding gate reverted.
+//   - Removed the Onboarding route entirely.
+//   - Removed the VerifyEmail route (VerifyEmailScreen deleted).
+//   - Removed the dynamic initialRouteName / key logic.
+//   - Fixed initialRouteName="Home". The navigator is always mounted
+//     once authReady, always starts on Home.
+//   - AuthGate unchanged. Still redirects guests (isAnonymous) to
+//     Login for gated routes. Login/Signup are reached via the Home
+//     guest banner and Settings account section.
 //
-//     Key logic (see below):
-//       isOnboarded === false, pendingConfirmation === false
-//         → key 'onboarding', initialRoute 'Onboarding'
-//       isOnboarded === false, pendingConfirmation === true
-//         → key 'verify',     initialRoute 'VerifyEmail'
-//       isOnboarded === true
-//         → key 'app',        initialRoute 'Home'
-//
-//   - Register VerifyEmail (Chat 12b new screen).
-//   - Register Onboarding as before, but it's now the initial route
-//     only when not onboarded and not pending confirmation.
-//   - navigationRef is imported from ./navigationRef (already done in
-//     Chat 12b; no cycle).
-//   - AuthGate is unchanged. It still redirects guests to Login for
-//     gated routes. It's only ever evaluated for users with a session.
+// navigationRef is imported from ./navigationRef (moved out of this
+// file in Chat 12b to break an import cycle with LoginScreen) and
+// re-exported here for existing importers.
 //
 // APK: platform-agnostic. No web-only APIs used.
 
@@ -67,10 +59,6 @@ import SignupLinkScreen from '../screens/SignupLinkScreen';
 import ForgotPasswordScreen from '../screens/ForgotPasswordScreen';
 import ResetPasswordScreen from '../screens/ResetPasswordScreen';
 
-// Chat 12b — onboarding + email verification
-import OnboardingScreen from '../screens/OnboardingScreen';
-import VerifyEmailScreen from '../screens/VerifyEmailScreen';
-
 // Chat 10 — AI training screens
 import TrainingMatchScreen from '../screens/TrainingMatchScreen';
 import TrainingResultScreen from '../screens/TrainingResultScreen';
@@ -87,14 +75,12 @@ import TournamentBracketScreen from '../screens/TournamentBracketScreen';
 import TournamentMatchScreen from '../screens/TournamentMatchScreen';
 import TournamentChampionScreen from '../screens/TournamentChampionScreen';
 
-// Shared navigation ref (moved out of this file to break an import
-// cycle with LoginScreen).
+// Shared navigation ref.
 import { navigationRef } from './navigationRef';
 
 import { useUserStore } from '../store/userStore';
 
-// Re-export so existing importers of `{ navigationRef }` from this
-// module keep working.
+// Re-export so existing importers keep working.
 export { navigationRef };
 
 // Chat 11a — variant id type (mirrors BlitzRules.ts)
@@ -111,9 +97,6 @@ type BlitzVariantId =
   | 'two-faced';
 
 export type RootStackParamList = {
-  Onboarding: undefined;
-  VerifyEmail: undefined;
-
   Home: undefined;
   Game: { mode?: string; training?: boolean } | undefined;
   OnlineMode: undefined;
@@ -226,9 +209,7 @@ const Stack = createStackNavigator<RootStackParamList>();
 // that carries them back after sign-in. Registered users see the
 // screen unchanged.
 //
-// Unchanged from Chat 11. The onboarding gate sits above it via
-// the navigator's initial route — AuthGate is only evaluated for
-// sessions that are already past onboarding.
+// Unchanged from Chat 11.
 // ────────────────────────────────────────────────────────────
 function AuthGate({ component: Component, ...rest }: any) {
   const navigation = useNavigation<any>();
@@ -265,51 +246,21 @@ function AuthGate({ component: Component, ...rest }: any) {
 }
 
 export default function AppNavigator() {
-  // Chat 12b (fix) — dynamic initial route.
-  //
-  // Derived from `isOnboarded` and `pendingConfirmation`, NOT from
-  // `hasSession`. Silent anon sessions created during Sign Up /
-  // Continue as Guest flip hasSession true immediately, but they do
-  // NOT flip isOnboarded. That is the bug this fixes.
-  //
-  // The `key` on Stack.Navigator forces a full remount when the
-  // gate state changes, so the new initialRouteName takes effect.
-  const isOnboarded = useUserStore((s) => s.isOnboarded);
-  const pendingConfirmation = useUserStore((s) => s.pendingConfirmation);
-
-  let initialRouteName: keyof RootStackParamList = 'Onboarding';
-  let navigatorKey = 'onboarding';
-
-  if (isOnboarded) {
-    initialRouteName = 'Home';
-    navigatorKey = 'app';
-  } else if (pendingConfirmation) {
-    initialRouteName = 'VerifyEmail';
-    navigatorKey = 'verify';
-  }
-
-  console.log(
-    '[NAV] rendering navigator',
-    '| isOnboarded:', isOnboarded,
-    '| pendingConfirmation:', pendingConfirmation,
-    '| initialRoute:', initialRouteName,
-    '| key:', navigatorKey
-  );
+  // Chat 12c — fixed initial route. The navigator is only mounted
+  // when authReady is true and a session exists (guaranteed by
+  // App.tsx's boot: bootstrapAuth auto-guests if needed). No gate
+  // logic lives here.
+  console.log('[NAV] rendering navigator | initialRoute: Home');
 
   return (
     <NavigationContainer ref={navigationRef}>
       <Stack.Navigator
-        key={navigatorKey}
-        initialRouteName={initialRouteName}
+        initialRouteName="Home"
         screenOptions={{
           headerShown: false,
           cardStyle: { backgroundColor: '#0a0a0f' },
         }}
       >
-        {/* ─── Onboarding flow ─── */}
-        <Stack.Screen name="Onboarding" component={OnboardingScreen} />
-        <Stack.Screen name="VerifyEmail" component={VerifyEmailScreen} />
-
         {/* ─── Ungated — offline-safe ─── */}
         <Stack.Screen name="Home" component={HomeScreen} />
         <Stack.Screen name="Game" component={GameScreen} />
