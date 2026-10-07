@@ -11,14 +11,11 @@
 // Chat 12b — onboarding became a route, keyed on hasSession, then
 //            isOnboarded.
 // Chat 12c — Onboarding gate reverted.
-//   - Removed the Onboarding route entirely.
-//   - Removed the VerifyEmail route (VerifyEmailScreen deleted).
-//   - Removed the dynamic initialRouteName / key logic.
-//   - Fixed initialRouteName="Home". The navigator is always mounted
-//     once authReady, always starts on Home.
-//   - AuthGate unchanged. Still redirects guests (isAnonymous) to
-//     Login for gated routes. Login/Signup are reached via the Home
-//     guest banner and Settings account section.
+// Chat 12d — Tournament bug fix.
+//   - TournamentBracket route params extended with
+//     `viewingFinishedBracket?: boolean`. When true, the bracket
+//     screen suppresses its auto-redirect to Champion, so the user
+//     can inspect the final bracket after the tournament ends.
 //
 // navigationRef is imported from ./navigationRef (moved out of this
 // file in Chat 12b to break an import cycle with LoginScreen) and
@@ -184,9 +181,13 @@ export type RootStackParamList = {
     isHost: boolean;
   };
   TournamentJoin: { code?: string } | undefined;
+  // Chat 12d — viewingFinishedBracket: when true, the bracket screen
+  // suppresses its auto-redirect to TournamentChampion. Set by the
+  // Champion screen when the user taps "View Final Bracket".
   TournamentBracket: {
     tournamentId: string;
     code?: string;
+    viewingFinishedBracket?: boolean;
   };
   TournamentMatch: {
     tournamentId: string;

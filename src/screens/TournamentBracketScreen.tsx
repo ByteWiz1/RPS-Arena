@@ -2,27 +2,21 @@
 //
 // RPS Arena — tournament bracket.
 //
-// Chat 11e — Active window removed.
-//   The Active window was causing state divergence (matched players
-//   were on the match screen when the window closed, and got
-//   eliminated) and never synced its countdown reliably. Removed in
-//   favor of a state-driven flow:
-//
-//     - Round starts: server pairs, creates rooms, emits matchAssigned
-//       to matched players immediately. BYE player advances silently.
-//     - Matched players navigate to the match screen.
-//     - BYE player stays on the bracket and sees the live scoreboard
-//       strip updating as the other match progresses.
-//     - Matches resolve. roundComplete fires. Next round begins.
-//     - Disconnect handling is the only presence check.
-//
-//   Removed: Active button, Active countdown bar, "You're Active"
-//   confirmation, pressActive emit, activeSet state, activeSecondsLeft
-//   state, onActiveWindowUpdate / onPlayerActive / onPlayerInactive
-//   subscriptions.
-//
-// Kept: live scoreboard strip, reconnect safety net, "3 players"
-//   header label, host "Begin Round X" button, chat panel.
+// Chat 11e — Active window removed. State-driven flow.
+// Chat 12d — Tournament bug fix.
+//   BUG B: BYE player live scores.
+//     - onTournamentScoresUpdate subscription retained; scores keyed
+//       by tournamentId so a stale tournament's scores don't leak.
+//     - The server now explicitly emits tournamentScoresUpdate to
+//       every participant's sockets, so this screen works for the
+//       BYE player without any per-room hack.
+//   BUG C: Champion → View Bracket loop.
+//     - Reads route.params.viewingFinishedBracket. When true, the
+//       state-driven redirect to Champion is suppressed, and the
+//       onTournamentComplete handler is suppressed too.
+//     - Navigation to TournamentChampion uses replace() only when
+//       we are NOT in viewing-finished-bracket mode.
+//   UX: BYE banner + BYE badge.
 //
 // APK: platform-agnostic.
 
@@ -87,6 +81,10 @@ export default function TournamentBracketScreen() {
 
   const tournamentId: string = route.params?.tournamentId || '';
   const code: string = route.params?.code || '';
+  // Bug C: when the user explicitly navigated here from the
+  // Champion screen, do NOT auto-redirect back to Champion.
+  const viewingFinishedBracket: boolean =
+    route.params?.viewingFinishedBracket === true;
 
   const { identity } = useUserStore();
   const myUserId = identity?.userId || '';
@@ -98,6 +96,7 @@ export default function TournamentBracketScreen() {
   const [startingNext, setStartingNext] = useState(false);
   const [banner, setBanner] = useState<string>('');
   const [scoresByMatch, setScoresByMatch] = useState<TournamentScoresPayload>({});
+  const [byeBannerDismissed, setByeBannerDismissed] = useState(false);
   const lastRoundRef = useRef<number>(0);
 
   const isHost = tournament?.hostId === myUserId;
@@ -108,6 +107,13 @@ export default function TournamentBracketScreen() {
       ? tournament.rounds[tournament.rounds.length - 1]
       : null;
 
+  // UX: am I the BYE player this round?
+  const amIByeThisRound =
+    isLive &&
+    !!currentRoundObj &&
+    !!myUserId &&
+    currentRoundObj.bye === myUserId;
+
   // ─── Connect + listeners ───
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +123,7 @@ export default function TournamentBracketScreen() {
       console.log(
         '[TOURNAMENT BRACKET] mount | id:', tournamentId, '| code:', code,
         '| myUserId:', myUserId,
+        '| viewingFinishedBracket:', viewingFinishedBracket,
         '| socket connected:', !!getSocket()?.connected
       );
 
@@ -161,7 +168,7 @@ export default function TournamentBracketScreen() {
         setScoresByMatch(payload);
       });
 
-            const offStarted = onRoundStarted((payload: RoundStartedPayload) => {
+      const offStarted = onRoundStarted((payload: RoundStartedPayload) => {
         if (cancelled) return;
         console.log(
           '[TOURNAMENT BRACKET] roundStarted | round:', payload.roundNumber,
@@ -169,12 +176,13 @@ export default function TournamentBracketScreen() {
           '| bye:', payload.bye
         );
         lastRoundRef.current = payload.roundNumber;
+        // A new round clears the BYE banner dismissal so it can
+        // re-appear if I'm the BYE player again.
+        setByeBannerDismissed(false);
         setBanner(`Round ${payload.roundNumber} started`);
         setTimeout(() => setBanner(''), 3000);
 
-        // Fresh state fetch at the top of every round. Ensures the
-        // strip and bracket reflect the current round even if a
-        // broadcast was missed (this is the round-1 BYE strip fix).
+        // Fresh state fetch at the top of every round.
         getTournamentFromServer({ tournamentId }).then((t) => {
           if (cancelled || !t) return;
           applyState(t);
@@ -208,6 +216,15 @@ export default function TournamentBracketScreen() {
         console.log(
           '[TOURNAMENT BRACKET] tournamentComplete | winner:', data.winnerId
         );
+        // Bug C: do not bounce the user back to Champion if they
+        // explicitly asked to view the finished bracket.
+        if (viewingFinishedBracket) {
+          console.log(
+            '[TOURNAMENT BRACKET] viewingFinishedBracket=true — ' +
+            'suppressing redirect to Champion'
+          );
+          return;
+        }
         navigation.replace('TournamentChampion', {
           tournamentId,
           winnerId: data.winnerId || '',
@@ -304,13 +321,21 @@ export default function TournamentBracketScreen() {
     setTournament(t);
   };
 
-    // ─── State-driven champion navigation ───
-  // If the tournament finishes, go to the champion screen. This
-  // fires even if tournamentComplete was dropped or arrived during
-  // a navigation race.
+  // ─── State-driven champion navigation ───
+  // If the tournament finishes, go to the champion screen — UNLESS
+  // the user explicitly requested to view the finished bracket.
   useEffect(() => {
     if (!tournament) return;
     if (tournament.status !== 'finished') return;
+    // Bug C: do not redirect when the user opened the finished
+    // bracket on purpose.
+    if (viewingFinishedBracket) {
+      console.log(
+        '[TOURNAMENT BRACKET] finished state but viewingFinishedBracket=true ' +
+        '— staying on bracket'
+      );
+      return;
+    }
     console.log(
       '[TOURNAMENT BRACKET] status finished → navigating to champion'
     );
@@ -318,7 +343,13 @@ export default function TournamentBracketScreen() {
       tournamentId,
       winnerId: tournament.winnerId || '',
     });
-  }, [tournament?.status, tournament?.winnerId, tournamentId, navigation]);
+  }, [
+    tournament?.status,
+    tournament?.winnerId,
+    tournamentId,
+    viewingFinishedBracket,
+    navigation,
+  ]);
 
   const handleBeginNextRound = useCallback(() => {
     if (!isHost || !tournamentId) return;
@@ -361,17 +392,13 @@ export default function TournamentBracketScreen() {
   const meInTournament = !!tournament && tournament.players.includes(myUserId);
 
   // ─── Live scoreboard entries ───
-    const buildScoreEntries = useCallback((): ScoreEntry[] => {
+  const buildScoreEntries = useCallback((): ScoreEntry[] => {
     if (!tournament || !tournament.rounds?.length) return [];
     const lastRound = tournament.rounds[tournament.rounds.length - 1];
     if (!lastRound || !lastRound.matches?.length) return [];
 
     const entries: ScoreEntry[] = [];
     for (const m of lastRound.matches) {
-      // Prefer live scores from the tournamentScoresUpdate event; fall
-      // back to the state snapshot. Without this, the strip only
-      // updates on tournamentState broadcasts (which are less frequent
-      // than score updates during a match).
       const live = scoresByMatch[m.matchId];
       const p1Score = live?.scores?.p1 ?? m.scores?.p1 ?? 0;
       const p2Score = live?.scores?.p2 ?? m.scores?.p2 ?? 0;
@@ -393,9 +420,8 @@ export default function TournamentBracketScreen() {
     }
     return entries;
   }, [tournament, displayName, scoresByMatch]);
-  // Am I currently in an active match this round? If so, the match
-  // screen will navigate us there, and this screen shouldn't show the
-  // strip.
+
+  // Am I currently in an active match this round?
   const myMatchThisRound = (() => {
     if (!currentRoundObj || !myUserId) return null;
     for (const m of currentRoundObj.matches) {
@@ -408,6 +434,11 @@ export default function TournamentBracketScreen() {
   const showLiveStrip =
     isLive && !myMatchIsActive && (currentRoundObj?.matches?.length ?? 0) > 0;
 
+  // UX: show BYE banner only when I'm the BYE player this round,
+  // I'm not in an active match, and I haven't dismissed it.
+  const showByeBanner =
+    amIByeThisRound && !myMatchIsActive && !byeBannerDismissed;
+
   return (
     <ScreenContainer>
       <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -417,7 +448,7 @@ export default function TournamentBracketScreen() {
           </TouchableOpacity>
           <View style={styles.headerCenter}>
             <Text style={styles.headerTitle}>🏆 Bracket</Text>
-                        <Text style={styles.headerSubtitle}>
+            <Text style={styles.headerSubtitle}>
               {tournament
                 ? `Round ${currentRound || '—'} · ${tournament.players.length} players · First to ${tournament.winTarget}`
                 : 'Loading…'}
@@ -430,6 +461,18 @@ export default function TournamentBracketScreen() {
           <View style={styles.banner}>
             <Text style={styles.bannerText}>{banner}</Text>
           </View>
+        ) : null}
+
+        {showByeBanner ? (
+          <TouchableOpacity
+            style={styles.byeBanner}
+            onPress={() => setByeBannerDismissed(true)}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.byeBannerText}>
+              🎉 You advanced to the next round — waiting for opponents
+            </Text>
+          </TouchableOpacity>
         ) : null}
 
         {showLiveStrip ? (
@@ -704,6 +747,24 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   bannerText: { fontSize: 12, color: '#fbbf24', fontWeight: '700' },
+  // UX: BYE banner.
+  byeBanner: {
+    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    borderColor: 'rgba(34, 197, 94, 0.45)',
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginHorizontal: 12,
+    marginTop: 6,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  byeBannerText: {
+    fontSize: 12,
+    color: '#22c55e',
+    fontWeight: '800',
+    textAlign: 'center',
+  },
   liveStripWrap: {
     marginTop: 8,
   },

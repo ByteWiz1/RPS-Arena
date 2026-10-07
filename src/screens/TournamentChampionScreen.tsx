@@ -4,12 +4,21 @@
 //
 // Chat 11b (debug pass):
 //   - Subscribes to onTournamentError (defensive).
-//   - [TOURNAMENT CHAMPION] logs: mount, connect, state fetch,
-//     winnerId source, avatar refresh, reward rows.
+//   - [TOURNAMENT CHAMPION] logs.
+// Chat 12d — Tournament bug fix.
+//   BUG C: Champion screen fixes.
+//     - Celebration sound is guarded by a useRef keyed on
+//       tournamentId + winnerId, so it plays exactly once per
+//       (tournament, champion) pair, even if the screen is
+//       remounted by returning from the bracket.
+//     - "View Final Bracket" now uses navigate() (not replace())
+//       with `viewingFinishedBracket: true`. Champion stays on the
+//       stack, so Back returns here. The bracket screen reads the
+//       flag and suppresses its auto-redirect.
 //
 // APK: platform-agnostic.
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -63,6 +72,13 @@ export default function TournamentChampionScreen() {
 
   const [tournament, setTournament] = useState<Tournament | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Bug C: celebration sound guard. Keyed on tournamentId + winnerId
+  // so a tournament never replays its celebration, even if this
+  // screen is unmounted and remounted (e.g. by returning from the
+  // bracket screen). The ref lives for the lifetime of the JS
+  // session — see PROJECT_STATE note about app restarts.
+  const celebrationPlayedRef = useRef<string | null>(null);
 
   const winnerId = tournament?.winnerId || winnerIdFromRoute || null;
   const isMeChampion = !!winnerId && winnerId === myUserId;
@@ -149,13 +165,31 @@ export default function TournamentChampionScreen() {
   }, [tournamentId, syncFromServer, winnerIdFromRoute, myUserId]);
 
   // ─── Audio ───
+  // Bug C: play the celebration exactly once per
+  // (tournamentId, winnerId) pair. Returning to this screen after
+  // viewing the bracket will not replay it.
   useEffect(() => {
     stopMusic();
-    const iWon = !!winnerIdFromRoute && winnerIdFromRoute === myUserId;
-    console.log('[TOURNAMENT CHAMPION] playing celebration | iWon:', iWon);
+    if (loading) return;
+    if (!winnerId) return; // no champion yet — nothing to celebrate
+
+    const key = `${tournamentId}::${winnerId}`;
+    if (celebrationPlayedRef.current === key) {
+      console.log(
+        '[TOURNAMENT CHAMPION] celebration already played for', key,
+        '— skipping'
+      );
+      return;
+    }
+    celebrationPlayedRef.current = key;
+
+    const iWon = winnerId === myUserId;
+    console.log(
+      '[TOURNAMENT CHAMPION] playing celebration | iWon:', iWon,
+      '| key:', key
+    );
     playCelebrationSequence(iWon).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loading, winnerId, tournamentId, myUserId]);
 
   // ─── Log winnerId source once it's stable ───
   useEffect(() => {
@@ -276,8 +310,18 @@ export default function TournamentChampionScreen() {
     });
   }, [navigation]);
 
+  // Bug C: navigate (not replace) so Champion stays on the stack.
+  // The viewingFinishedBracket flag tells the bracket screen not to
+  // auto-redirect back here.
   const handleViewBracket = useCallback(() => {
-    navigation.replace('TournamentBracket', { tournamentId });
+    console.log(
+      '[TOURNAMENT CHAMPION] View Final Bracket → navigating with ' +
+      'viewingFinishedBracket: true'
+    );
+    navigation.navigate('TournamentBracket', {
+      tournamentId,
+      viewingFinishedBracket: true,
+    });
   }, [navigation, tournamentId]);
 
   const rewardRows = buildRewardRows();
