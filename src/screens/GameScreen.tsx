@@ -258,7 +258,7 @@ useEffect(() => {
     character={character}
     animation={p1Anim}
     facing="right"
-    size={140}
+    size={220}
   />
 </View>
 

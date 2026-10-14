@@ -516,7 +516,7 @@ if (result === 'p1' || result === 'p2') {
     character={character}
     animation={myAnim}
     facing="right"
-    size={140}
+    size={220}
   />
 </View>
 

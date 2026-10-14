@@ -19,6 +19,7 @@ export default function BattleCharacter({
   onAnimationEnd,
 }: Props) {
   const def = character.animations[animation];
+   console.log('[BATTLE]', character.id, 'animation:', animation, 'def:', def);
   if (!def) return null;
 
   return (
