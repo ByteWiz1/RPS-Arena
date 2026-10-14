@@ -275,7 +275,7 @@ if (result === 'p1' || result === 'p2') {
   setWinner(null);
   setMyAnim('idle');
   setOppAnim('idle');
-}, isAvatarMode ? 1200 : 2000);
+}, isAvatarMode ? 1200 : 2500);
       }
     });
 

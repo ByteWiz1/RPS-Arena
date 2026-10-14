@@ -117,22 +117,21 @@ useEffect(() => {
 
 useEffect(() => {
   if (!winner) return;
-  // winner: 'win' means player1 won, 'lose' means player2 won, 'tie'
   if (winner === 'win') {
     setTimeout(() => {
       setP1Anim('idle');
       setP2Anim('hit');
-    }, 600);
+    }, 800);
   } else if (winner === 'lose') {
     setTimeout(() => {
       setP1Anim('hit');
       setP2Anim('idle');
-    }, 600);
+    }, 800);
   }
   setTimeout(() => {
     setP1Anim('idle');
     setP2Anim('idle');
-  }, 2000);
+  }, 3500);
 }, [winner]);
 
   // Push recent moves whenever both moves become available
