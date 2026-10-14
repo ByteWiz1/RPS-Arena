@@ -16,6 +16,8 @@ import { ChevronLeft, RotateCcw } from 'lucide-react-native';
 import { startGameMusic, stopMusic, playSound } from '../services/audio';
 import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
+import BattleCharacter from '../components/BattleCharacter';
+import { getCharacter, animationForMove, BattleAnimation } from '../data/characters';
 import RecentMovesTrail from '../components/RecentMovesTrail';
 
 const MAX_RECENT = 5;
@@ -47,6 +49,9 @@ export default function GameScreen() {
     getResultText,
     ai,
   } = useGameStore();
+  const [p1Anim, setP1Anim] = useState<BattleAnimation>('idle');
+const [p2Anim, setP2Anim] = useState<BattleAnimation>('idle');
+const character = getCharacter('knight');
 
   // Recent moves (newest first)
   const [p1RecentMoves, setP1RecentMoves] = useState<Move[]>([]);
@@ -99,6 +104,36 @@ export default function GameScreen() {
       }
     }
   }, [winner]);
+
+  useEffect(() => {
+  if (player1Move) setP1Anim(animationForMove(player1Move));
+  else setP1Anim('idle');
+}, [player1Move]);
+
+useEffect(() => {
+  if (player2Move) setP2Anim(animationForMove(player2Move));
+  else setP2Anim('idle');
+}, [player2Move]);
+
+useEffect(() => {
+  if (!winner) return;
+  // winner: 'win' means player1 won, 'lose' means player2 won, 'tie'
+  if (winner === 'win') {
+    setTimeout(() => {
+      setP1Anim('idle');
+      setP2Anim('hit');
+    }, 600);
+  } else if (winner === 'lose') {
+    setTimeout(() => {
+      setP1Anim('hit');
+      setP2Anim('idle');
+    }, 600);
+  }
+  setTimeout(() => {
+    setP1Anim('idle');
+    setP2Anim('idle');
+  }, 2000);
+}, [winner]);
 
   // Push recent moves whenever both moves become available
   useEffect(() => {
@@ -218,19 +253,27 @@ export default function GameScreen() {
           </View>
 
           <View style={styles.moveDisplay}>
-            <View style={styles.moveItem}>
-              <Text style={styles.moveLabel}>{getPlayerName(1)}</Text>
-              <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>{player1Move ? MOVE_ICONS[player1Move] : '❓'}</Text>
-              </View>
-            </View>
-            <Text style={styles.moveVs}>⚡</Text>
-            <View style={styles.moveItem}>
-              <Text style={styles.moveLabel} numberOfLines={1}>{getPlayerName(2)}</Text>
-              <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>{player2Move ? MOVE_ICONS[player2Move] : '❓'}</Text>
-              </View>
-            </View>
+            <View style={styles.charSlot}>
+  <BattleCharacter
+    character={character}
+    animation={p1Anim}
+    facing="right"
+    size={140}
+  />
+</View>
+
+<View style={styles.vsBadge}>
+  <Text style={styles.vsText}>⚡</Text>
+</View>
+
+<View style={styles.charSlot}>
+  <BattleCharacter
+    character={character}
+    animation={p2Anim}
+    facing="left"
+    size={140}
+  />
+</View>
           </View>
 
           <View style={styles.resultWrapper}>
@@ -379,4 +422,18 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   nextButtonText: { fontSize: 14, fontWeight: '700', color: '#ffffff' },
+  charSlot: {
+  flex: 1,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+vsBadge: {
+  paddingHorizontal: 8,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+vsText: {
+  fontSize: 20,
+  color: '#e94560',
+},
 });
