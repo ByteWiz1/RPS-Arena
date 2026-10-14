@@ -27,6 +27,8 @@ import ScreenContainer from '../components/ScreenContainer';
 import ScreenScroll from '../components/ScreenScroll';
 import ChatBubble from '../components/ChatBubble';
 import RecentMovesTrail from '../components/RecentMovesTrail';
+import BattleCharacter from '../components/BattleCharacter';
+import { getCharacter, animationForMove, BattleAnimation } from '../data/characters';
 import { showAlert } from '../utils/alert';
 
 interface ChatMessage {
@@ -71,6 +73,9 @@ export default function OnlineGameScreen() {
 
   const [myMove, setMyMove] = useState<Move | null>(null);
   const [opponentMove, setOpponentMove] = useState<Move | null>(null);
+  const [myAnim, setMyAnim] = useState<BattleAnimation>('idle');
+  const [oppAnim, setOppAnim] = useState<BattleAnimation>('idle');
+  const character = getCharacter('knight');
   const [myScore, setMyScore] = useState(0);
   const [opponentScore, setOpponentScore] = useState(0);
   const [myTies, setMyTies] = useState(0);
@@ -230,6 +235,17 @@ export default function OnlineGameScreen() {
       setOpponentMove(opponentMoveValue);
 
       const result = data.result;
+      if (myMoveValue) setMyAnim(animationForMove(myMoveValue));
+if (opponentMoveValue) setOppAnim(animationForMove(opponentMoveValue));
+
+if (result === 'p1' || result === 'p2') {
+  const iAmP1 = Object.keys(data.moves)[0] === playerId;
+  const iWon = (result === 'p1' && iAmP1) || (result === 'p2' && !iAmP1);
+  setTimeout(() => {
+    setMyAnim(iWon ? 'idle' : 'hit');
+    setOppAnim(iWon ? 'hit' : 'idle');
+  }, 600);
+}
       if (result === 'p1' || result === 'p2') {
         const iAmP1 = Object.keys(data.moves)[0] === playerId;
         const iWon = (result === 'p1' && iAmP1) || (result === 'p2' && !iAmP1);
@@ -253,11 +269,13 @@ export default function OnlineGameScreen() {
       if (data.matchOver && data.matchWinner) {
         setTimeout(() => triggerMatchEnd(data.matchWinner === playerId), 1200);
       } else {
-        setTimeout(() => {
-          setMyMove(null);
-          setOpponentMove(null);
-          setWinner(null);
-        }, isAvatarMode ? 1200 : 2000);
+       setTimeout(() => {
+  setMyMove(null);
+  setOpponentMove(null);
+  setWinner(null);
+  setMyAnim('idle');
+  setOppAnim('idle');
+}, isAvatarMode ? 1200 : 2000);
       }
     });
 
@@ -493,27 +511,27 @@ export default function OnlineGameScreen() {
           </View>
 
           <View style={styles.moveDisplay}>
-            <View style={styles.moveItem}>
-              <Text style={styles.moveLabel}>
-                {isAvatarMode ? '🤖 AI' : 'You'}
-              </Text>
-              <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>
-                  {myMove ? MOVE_ICONS[myMove] : '❓'}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.moveVs}>⚡</Text>
-            <View style={styles.moveItem}>
-              <Text style={styles.moveLabel} numberOfLines={1}>
-                {isAvatarMode ? '🤖 AI' : opponentName}
-              </Text>
-              <View style={styles.moveCircle}>
-                <Text style={styles.moveIcon}>
-                  {opponentMove ? MOVE_ICONS[opponentMove] : '❓'}
-                </Text>
-              </View>
-            </View>
+            <View style={styles.charSlot}>
+  <BattleCharacter
+    character={character}
+    animation={myAnim}
+    facing="right"
+    size={140}
+  />
+</View>
+
+<View style={styles.vsBadge}>
+  <Text style={styles.vsText}>⚡</Text>
+</View>
+
+<View style={styles.charSlot}>
+  <BattleCharacter
+    character={character}
+    animation={oppAnim}
+    facing="left"
+    size={140}
+  />
+</View>
           </View>
 
           <View style={styles.resultArea}>
@@ -776,4 +794,18 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   exitBtnText: { color: '#8a8a9a', fontSize: 14, fontWeight: '700' },
+  charSlot: {
+  flex: 1,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+vsBadge: {
+  paddingHorizontal: 8,
+  alignItems: 'center',
+  justifyContent: 'center',
+},
+vsText: {
+  fontSize: 20,
+  color: '#e94560',
+},
 });

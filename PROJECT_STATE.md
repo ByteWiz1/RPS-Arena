@@ -103,6 +103,7 @@ premium content. Free users play the full game.
 | 13 | Tournament Mode | ⚠️ Critical bugs (T1–T5) |
 | 14 | Security hardening | ❌ Priority #2 |
 | 15 | Polish pass + fix minor bugs | 🚧 **Priority #1** |
+| 16 | is_guest flips to false before email is confirmed | Medium | Users who sign up but never confirm end up with locked accounts (is_guest = false, email unconfirmed, can never log in). Fix: set is_guest = false only after email_confirmed_at is set, verified at identify time. |
 
 **Priority order:**
 1. Polish pass + fix all minor bugs (including tournament)

@@ -1,0 +1,82 @@
+{
+  "character": "golem",
+  "image": "golem.png",
+  "engine": "react-native-sprites",
+  "frameWidth": 377,
+  "frameHeight": 274,
+  "columns": 41,
+  "rows": 7,
+  "facing": "right",
+  "sourceFrameSize": {
+    "w": 753,
+    "h": 547
+  },
+  "downscale": 0.5,
+  "fps": 12,
+  "pivotNote": "feet aligned via shared sourceSize; each row uses startFrame..endFrame inclusive",
+  "animations": {
+    "idle": {
+      "row": 0,
+      "startFrame": 0,
+      "endFrame": 30,
+      "loop": true,
+      "fps": 12,
+      "frames": 31,
+      "sourceMove": "idle"
+    },
+    "throw_rock": {
+      "row": 1,
+      "startFrame": 0,
+      "endFrame": 13,
+      "loop": false,
+      "fps": 12,
+      "frames": 14,
+      "sourceMove": "hammer"
+    },
+    "throw_paper": {
+      "row": 2,
+      "startFrame": 0,
+      "endFrame": 11,
+      "loop": false,
+      "fps": 12,
+      "frames": 12,
+      "sourceMove": "bash"
+    },
+    "throw_scissors": {
+      "row": 3,
+      "startFrame": 0,
+      "endFrame": 10,
+      "loop": false,
+      "fps": 12,
+      "frames": 11,
+      "sourceMove": "thrust"
+    },
+    "hit": {
+      "row": 4,
+      "startFrame": 0,
+      "endFrame": 7,
+      "loop": false,
+      "fps": 12,
+      "frames": 8,
+      "sourceMove": "hurt"
+    },
+    "win": {
+      "row": 5,
+      "startFrame": 0,
+      "endFrame": 24,
+      "loop": false,
+      "fps": 12,
+      "frames": 25,
+      "sourceMove": "victory"
+    },
+    "lose": {
+      "row": 6,
+      "startFrame": 0,
+      "endFrame": 40,
+      "loop": false,
+      "fps": 12,
+      "frames": 41,
+      "sourceMove": "death"
+    }
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "character": "knight",
+  "image": "knight.png",
+  "engine": "react-native-sprites",
+  "frameWidth": 143,
+  "frameHeight": 121,
+  "columns": 24,
+  "rows": 7,
+  "facing": "right",
+  "sourceFrameSize": {
+    "w": 143,
+    "h": 121
+  },
+  "downscale": 1,
+  "fps": 12,
+  "pivotNote": "uniform untrimmed cells; each trimmed frame placed at its spriteSourceSize offset for jitter-free anchoring",
+  "animations": {
+    "idle": {
+      "row": 0,
+      "startFrame": 0,
+      "endFrame": 23,
+      "loop": true,
+      "fps": 12,
+      "frames": 24,
+      "sourceMove": "idle",
+      "sourceRange": [
+        0,
+        23
+      ],
+      "pivot": {
+        "x": 35,
+        "y": 55
+      }
+    },
+    "throw_rock": {
+      "row": 1,
+      "startFrame": 0,
+      "endFrame": 16,
+      "loop": false,
+      "fps": 12,
+      "frames": 17,
+      "sourceMove": "attack",
+      "sourceRange": [
+        75,
+        91
+      ],
+      "pivot": {
+        "x": 39,
+        "y": 95
+      }
+    },
+    "throw_paper": {
+      "row": 2,
+      "startFrame": 0,
+      "endFrame": 11,
+      "loop": false,
+      "fps": 12,
+      "frames": 12,
+      "sourceMove": "shield_bash",
+      "sourceRange": [
+        106,
+        117
+      ],
+      "pivot": {
+        "x": 33,
+        "y": 55
+      }
+    },
+    "throw_scissors": {
+      "row": 3,
+      "startFrame": 0,
+      "endFrame": 15,
+      "loop": false,
+      "fps": 12,
+      "frames": 16,
+      "sourceMove": "spin_slash",
+      "sourceRange": [
+        118,
+        133
+      ],
+      "pivot": {
+        "x": 65,
+        "y": 76
+      }
+    },
+    "hit": {
+      "row": 4,
+      "startFrame": 0,
+      "endFrame": 7,
+      "loop": false,
+      "fps": 12,
+      "frames": 8,
+      "sourceMove": "hurt",
+      "sourceRange": [
+        134,
+        141
+      ],
+      "pivot": {
+        "x": 35,
+        "y": 62
+      }
+    },
+    "win": {
+      "row": 5,
+      "startFrame": 0,
+      "endFrame": 15,
+      "loop": true,
+      "fps": 12,
+      "frames": 16,
+      "sourceMove": "celebrate",
+      "sourceRange": [
+        171,
+        186
+      ],
+      "pivot": {
+        "x": 35,
+        "y": 86
+      }
+    },
+    "lose": {
+      "row": 6,
+      "startFrame": 0,
+      "endFrame": 20,
+      "loop": false,
+      "fps": 12,
+      "frames": 21,
+      "sourceMove": "death",
+      "sourceRange": [
+        187,
+        207
+      ],
+      "pivot": {
+        "x": 78,
+        "y": 60
+      }
+    }
+  }
+}
